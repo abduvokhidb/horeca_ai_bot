@@ -1,0 +1,2 @@
+BOT_TOKEN = "8005801479:AAFf2ycwzc-1ugyhJgKc1Md17OZLPK0eUYA"
+OPENAI_API_KEY = "sk-ВАШ_КЛЮЧ_ОТ_OPENAI"
