@@ -1,359 +1,516 @@
-#!/usr/bin/env python3
+coffee_keywords = ['latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk', 'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind', 'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta', 'origin', 'blend', 'pour', 'tamping', 'dosing']
+    
+    # Check if question is coffee-related
+    is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
+    
+    if not is_coffee_related:
+        return responses['not_coffee']
+    
+    # Find specific coffee topic
+    for keyword, response in responses.items():
+        if keyword in question_lower and keyword != 'not_coffee':
+            return response
+    
+    # Default coffee response
+    return responses.get('espresso', responses['not_coffee'])
+
+# Keyboard builders with role-based access
+def main_menu_keyboard(user_id, is_admin_user=False):
+    """Main menu keyboard with role-based access"""
+    builder = InlineKeyboardBuilder()
+    
+    if is_admin_user:
+        # Admin sees all employees data
+        builder.row(
+            InlineKeyboardButton(text=_(user_id, 'menu_employees'), callback_data="employees"),
+            InlineKeyboardButton(text=_(user_id, 'menu_cleaning'), callback_data="cleaning")
+        )
+    else:
+        # Regular employees see personal cabinet
+        builder.row(
+            InlineKeyboardButton(text=_(user_id, 'menu_personal'), callback_data="personal_cabinet"),
+            InlineKeyboardButton(text=_(user_id, 'menu_cleaning'), callback_data="cleaning")
+        )
+    
+    builder.row(
+        InlineKeyboardButton(text=_(user_id, 'menu_reports'), callback_data="reports"),
+        InlineKeyboardButton(text=_(user_id, 'menu_ai_help'), callback_data="ai_help")
+    )
+    builder.row(
+        InlineKeyboardButton(text=_(user_id, 'menu_restaurant'), callback_data="restaurant"),
+        InlineKeyboardButton(text=_(user_id, 'menu_settings'), callback_data="settings")
+    )
+    
+    if is_admin_user:
+        builder.row(
+            InlineKeyboardButton(text=_(user_id, 'menu_admin'), callback_data="admin")
+        )
+    
+    return builder.as_markup()
+
+def back_to_menu_keyboard(user_id):
+    """Back to main menu keyboard"""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=_(user_id, 'main_menu'), callback_data="main_menu")
+    ]])
+
+def language_selection_keyboard():
+    """Language selection keyboard"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇺🇿 O'zbek tili", callback_data="lang_uz")],
+        [InlineKeyboardButton(text="🇷🇺 Русский язык", callback_data="lang_ru")],
+        [InlineKeyboardButton(text="🇬🇧 English Language", callback_data="lang_en")],
+        [InlineKeyboardButton(text="🔙 Orqaga / Назад / Back", callback_data="main_menu")]
+    ])
+
+# Message handlers
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    user_id = message.from_user.id
+    username = message.from_user.first_name or "Foydalanuvchi"
+    
+    employee = get_employee_by_telegram(user_id)
+    
+    if employee:
+        # Set user language from database
+        if employee[6]:  # language field
+            set_user_language(user_id, employee[6])
+        
+        is_admin_user = is_admin(user_id)
+        
+        if is_admin_user:
+            welcome_text = _(user_id, 'welcome_admin', name=employee[1], position=employee[3])
+        else:
+            welcome_text = _(user_id, 'welcome_employee', name=employee[1], position=employee[3])
+        
+        await message.answer(
+            welcome_text,
+            reply_markup=main_menu_keyboard(user_id, is_admin_user)
+        )
+    else:
+        welcome_text = _(user_id, 'welcome_guest', username=username)
+        await message.answer(welcome_text)
+
+@dp.message(F.text.regexp(r'\+998\d{9}'))
+async def register_phone(message: types.Message):
+    """Register phone number"""
+    phone = message.text.strip()
+    user_id = message.from_user.id
+    
+    if register_employee_telegram(phone, user_id):
+        employee = get_employee_by_telegram(user_id)
+        is_admin_user = is_admin(user_id)
+        
+        success_text = f"""✅ **Tabriklaymiz!** Muvaffaqiyatli ro'yxatdan o'tdingiz!
+
+👤 **Ism:** {employee[1]}
+🎯 **Lavozim:** {employee[3]}
+⭐ **Status:** {'Admin huquqlari' if is_admin_user else 'Hodim huquqlari'}
+
+🚀 Endi botdan to'liq foydalanishingiz mumkin!"""
+        
+        await message.answer(
+            success_text,
+            reply_markup=main_menu_keyboard(user_id, is_admin_user)
+        )
+    else:
+        await message.answer(_(user_id, 'phone_not_found'))
+
+# Enhanced AI text handler
+@dp.message(F.text)
+async def handle_text_message(message: types.Message):
+    """Handle text messages with enhanced coffee AI"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await message.answer("❌ Avval ro'yxatdan o'ting! /start buyrug'ini bosing.")
+        return
+    
+    # Skip phone registration
+    if message.text.startswith('+998'):
+        return
+    
+    user_question = message.text.strip()
+    
+    # Show typing indicator
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
+    # Get enhanced coffee AI response
+    employee_context = {
+        "name": employee[1],
+        "position": employee[3],
+        "id": employee[0]
+    }
+    
+    ai_response = await get_enhanced_coffee_ai_response(user_question, employee_context, user_id)
+    
+    # Save AI request
+    save_ai_request(employee[0], user_question, ai_response)
+    
+    await message.answer(ai_response, reply_markup=back_to_menu_keyboard(user_id))
+
+# Callback query handlers
+@dp.callback_query(F.data == "main_menu")
+async def main_menu_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    is_admin_user = is_admin(user_id)
+    
+    await callback.message.edit_text(
+        _(user_id, 'main_menu') + "\n\nKerakli bo'limni tanlang:",
+        reply_markup=main_menu_keyboard(user_id, is_admin_user)
+    )
+
+@dp.callback_query(F.data == "personal_cabinet")
+async def personal_cabinet_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await callback.answer("❌ Xatolik!")
+        return
+    
+    # Get personal statistics
+    stats = get_personal_stats(employee[0])
+    if not stats:
+        await callback.message.edit_text(
+            "❌ Statistika ma'lumotlarini olishda xatolik!",
+            reply_markup=back_to_menu_keyboard(user_id)
+        )
+        return
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📊 Mening Statistikam", callback_data="my_detailed_stats"),
+        InlineKeyboardButton(text="📋 Mening Vazifalarim", callback_data="my_tasks")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📅 Ish Jadvali", callback_data="my_schedule"),
+        InlineKeyboardButton(text="⏰ Ish Vaqti", callback_data="work_time")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏆 Reyting", callback_data="my_rating"),
+        InlineKeyboardButton(text="🎯 Maqsadlar", callback_data="my_goals")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
+    )
+    
+    # Format personal cabinet info
+    success_rate = stats['success_rate']
+    rating_emoji = "🏆" if success_rate >= 95 else "🥇" if success_rate >= 85 else "🥈" if success_rate >= 70 else "📈"
+    
+    cabinet_text = f"""🏠 **Shaxsiy Kabinet - {employee[1]}**
+
+{rating_emoji} **Umumiy Ko'rsatkichlar:**
+• Muvaffaqiyat darajasi: {success_rate:.1f}%
+• Bajarilgan tekshiruvlar: {stats['approved_checks']}/{stats['total_checks']}
+• AI so'rovlari: {stats['ai_requests']} ta
+• Tugallanmagan vazifalar: {stats['pending_tasks']} ta
+
+🎯 **Lavozim:** {employee[3]}
+📅 **Faollik:** {datetime.now().strftime('%B %Y')}
+
+Quyidagi bo'limlar orqali batafsil ma'lumot olishingiz mumkin:"""
+    
+    await callback.message.edit_text(
+        cabinet_text,
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data == "my_tasks")
+async def my_tasks_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await callback.answer("❌ Xatolik!")
+        return
+    
+    tasks = get_personal_tasks(employee[0])
+    
+    if not tasks:
+        tasks_text = f"""📋 **{employee[1]} - Shaxsiy Vazifalar**
+
+✅ **Barcha vazifalar bajarilgan!**
+
+Yangi vazifalar tez orada qo'shiladi."""
+    else:
+        tasks_text = f"""📋 **{employee[1]} - Shaxsiy Vazifalar**
+
 """
-Horeca AI Bot - Complete Production Version
-Deploy ready for Render.com
-All syntax errors fixed - Zero bugs
+        
+        for i, (title, description, is_completed, due_date) in enumerate(tasks, 1):
+            status_emoji = "✅" if is_completed else "⏳"
+            due_str = ""
+            if due_date:
+                due_parsed = datetime.strptime(due_date, '%Y-%m-%d %H:%M:%S')
+                if due_parsed.date() == datetime.now().date():
+                    due_str = " (Bugun)"
+                elif due_parsed.date() < datetime.now().date():
+                    due_str = " (Muddati o'tgan)"
+                else:
+                    due_str = f" ({due_parsed.strftime('%d.%m')})"
+            
+            tasks_text += f"""{status_emoji} **{i}. {title}**{due_str}
+{description}
+
 """
+    
+    await callback.message.edit_text(
+        tasks_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 Shaxsiy Kabinet", callback_data="personal_cabinet")
+        ]])
+    )
 
-import asyncio
-import sqlite3
-import os
-import json
-import random
-from datetime import datetime
-from pathlib import Path
+@dp.callback_query(F.data == "my_detailed_stats")
+async def my_detailed_stats_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await callback.answer("❌ Xatolik!")
+        return
+    
+    stats = get_personal_stats(employee[0])
+    if not stats:
+        await callback.message.edit_text(
+            "❌ Statistika ma'lumotlarini olishda xatolik!",
+            reply_markup=back_to_menu_keyboard(user_id)
+        )
+        return
+    
+    current_month = datetime.now().strftime('%B %Y')
+    
+    stats_text = _(user_id, 'personal_stats',
+                   name=employee[1],
+                   total_checks=stats['total_checks'],
+                   approved_checks=stats['approved_checks'], 
+                   success_rate=stats['success_rate'],
+                   ai_requests=stats['ai_requests'],
+                   position=employee[3],
+                   current_month=current_month)
+    
+    # Add performance evaluation
+    success_rate = stats['success_rate']
+    if success_rate >= 95:
+        stats_text += "\n\n🏆 **A'LO NATIJA!** Siz eng yaxshi hodimlardan birisiz!"
+    elif success_rate >= 85:
+        stats_text += "\n\n👍 **YAXSHI NATIJA!** Davom etishda!"
+    elif success_rate >= 70:
+        stats_text += "\n\n📈 **O'RTACHA NATIJA.** Yaxshilash mumkin."
+    else:
+        stats_text += "\n\n📝 **DIQQAT TALAB.** Ko'proq e'tibor qarating."
+    
+    await callback.message.edit_text(
+        stats_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 Shaxsiy Kabinet", callback_data="personal_cabinet")
+        ]])
+    )
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+@dp.callback_query(F.data == "settings")
+async def settings_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    current_lang = get_user_language(user_id)
+    
+    lang_names = {
+        'uz': "O'zbek tili 🇺🇿",
+        'ru': "Русский язык 🇷🇺", 
+        'en': "English Language 🇬🇧"
+    }
+    
+    settings_text = f"""⚙️ **Sozlamalar**
 
-# Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8005801479:AAENfmXu1fCX7srHvBxLPhLaKNwydC_r23A")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "horeca_bot.db")
-PORT = int(os.getenv("PORT", 8000))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+🌐 **Joriy til:** {lang_names.get(current_lang, 'O\'zbek tili 🇺🇿')}
 
-# AI availability check
-AI_ENABLED = bool(OPENAI_API_KEY and OPENAI_API_KEY.startswith('sk-'))
+Tilni o'zgartirish uchun quyidagi tugmalardan birini tanlang:"""
+    
+    await callback.message.edit_text(
+        settings_text,
+        reply_markup=language_selection_keyboard()
+    )
 
-if AI_ENABLED:
-    try:
-        import openai
-        openai.api_key = OPENAI_API_KEY
-        print("🤖 Real AI enabled with OpenAI")
-    except ImportError:
-        AI_ENABLED = False
-        print("⚠️ OpenAI not installed, using demo mode")
-else:
-    print("🎭 Demo AI mode - add OPENAI_API_KEY for real AI")
-
-# Initialize bot
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-
-# Create directories
-Path("photos").mkdir(exist_ok=True)
-Path("logs").mkdir(exist_ok=True)
-
-# Test employees data
-TEST_EMPLOYEES = [
-    {"name": "Admin", "phone": "+998900007747", "position": "Admin"},
-    {"name": "Akmal Karimov", "phone": "+998901234567", "position": "Barista"},
-    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"}, 
-    {"name": "Maryam Tosheva", "phone": "+998901234569", "position": "Tozalovchi"},
-    {"name": "Jasur Olimov", "phone": "+998901234570", "position": "Servis Manager"},
-]
-
-# Database functions
-def init_database():
-    """Initialize SQLite database"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        # Employees table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS employees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                phone TEXT UNIQUE NOT NULL,
-                position TEXT NOT NULL,
-                telegram_id INTEGER UNIQUE,
-                is_active BOOLEAN DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Cleaning checks table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cleaning_checks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                photo_path TEXT,
-                ai_result TEXT,
-                is_approved BOOLEAN DEFAULT 0,
-                notes TEXT,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Restaurant info table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS restaurant_info (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                info_key TEXT UNIQUE NOT NULL,
-                info_value TEXT NOT NULL,
-                updated_by TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # AI requests table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                question TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Insert test employees
-        for emp in TEST_EMPLOYEES:
-            cursor.execute("""
-                INSERT OR IGNORE INTO employees (name, phone, position)
-                VALUES (?, ?, ?)
-            """, (emp["name"], emp["phone"], emp["position"]))
-        
-        # Insert default restaurant info
-        default_info = [
-            ('name', 'Demo Restoran'),
-            ('description', 'Zamonaviy restoran - sifatli xizmat va mazali taomlar'),
-            ('working_hours', '09:00 - 23:00'),
-            ('contact', '+998900007747'),
-        ]
-        
-        for key, value in default_info:
-            cursor.execute("""
-                INSERT OR IGNORE INTO restaurant_info (info_key, info_value, updated_by)
-                VALUES (?, ?, 'system')
-            """, (key, value))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        print(f"Database initialization error: {e}")
-        return False
-
-def get_employee_by_telegram(telegram_id):
-    """Get employee by Telegram ID"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, name, phone, position, telegram_id, is_active
-            FROM employees 
-            WHERE telegram_id = ? AND is_active = 1
-        """, (telegram_id,))
-        employee = cursor.fetchone()
-        conn.close()
-        return employee
-    except Exception as e:
-        print(f"Get employee error: {e}")
-        return None
-
-def register_employee_telegram(phone, telegram_id):
-    """Register employee's Telegram ID"""
+@dp.callback_query(F.data.startswith("lang_"))
+async def language_change_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    new_lang = callback.data.split("_")[1]
+    
+    # Update user language
+    set_user_language(user_id, new_lang)
+    
+    # Update in database
     try:
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE employees 
-            SET telegram_id = ? 
-            WHERE phone = ? AND is_active = 1
-        """, (telegram_id, phone))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
-    except Exception as e:
-        print(f"Register employee error: {e}")
-        return False
-
-def is_admin(telegram_id):
-    """Check if user is admin"""
-    employee = get_employee_by_telegram(telegram_id)
-    return employee and employee[3].lower() == 'admin'
-
-def save_ai_request(employee_id, question, answer):
-    """Save AI request to database"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO ai_requests (employee_id, question, answer)
-            VALUES (?, ?, ?)
-        """, (employee_id, question, answer))
+            SET language = ? 
+            WHERE telegram_id = ?
+        """, (new_lang, user_id))
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Save AI request error: {e}")
-
-def save_cleaning_check(employee_id, photo_path, ai_result, is_approved):
-    """Save cleaning check result"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO cleaning_checks (employee_id, photo_path, ai_result, is_approved)
-            VALUES (?, ?, ?, ?)
-        """, (employee_id, photo_path, json.dumps(ai_result), is_approved))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Save cleaning check error: {e}")
-
-# AI response system
-def get_ai_response(question):
-    """Simple AI response system"""
-    question_lower = question.lower()
+        print(f"Language update error: {e}")
     
-    responses = {
-        'kofe': """☕ KOFE TAYYORLASH:
-
-🎯 Espresso:
-• 18-20g maydalangan kofe
-• 25-30 soniya ekstraktsiya
-• 92-96°C suv harorati
-• 9 bar bosim
-
-📏 Nisbatlar:
-• 1:2 (kofe:suv) - Espresso
-• 1:15-17 - Filter kofe""",
-
-        'latte': """🥛 LATTE RETSEPTI:
-
-🎯 Tarkibi:
-• 1 shot espresso (30ml)
-• 150ml buglangan sut
-• 1cm sut ko'pigi
-
-📋 Tayyorlash:
-1. Espresso tayyorlang
-2. Sutni 60-65°C gacha isiting
-3. Microfoam yarating
-4. Latte art qiling""",
-
-        'cappuccino': """☕ CAPPUCCINO:
-
-🎯 Tarkibi:
-• 1 shot espresso (30ml)
-• 100ml buglangan sut
-• Ko'p sut ko'pigi
-
-📋 Tayyorlash:
-1. Espresso tayyorlang
-2. Dense microfoam yarating
-3. 1/3 espresso, 1/3 sut, 1/3 ko'pik
-4. Kakao bilan bezatish mumkin""",
-
-        'mijoz': """🤝 MIJOZLAR BILAN ISHLASH:
-
-✅ Asosiy qoidalar:
-• Doimo jilmayib qarshi oling
-• Ko'z bilan aloqa o'rnating
-• Faol tinglang
-• Savollarni sabr bilan javoblang
-
-🎯 Xizmat bosqichlari:
-1. Salomlashing (3 soniya ichida)
-2. Buyurtmani qabul qilish
-3. Taklif berish
-4. Rahmat aytish""",
-
-        'tozalash': """🧹 TOZALASH QOIDALARI:
-
-⏰ Vaqt jadvali:
-• Har 30 daqiqada hojatxona
-• Har soatda ish joylari
-• Har 2 soatda pollarni supurish
-• Kuniga 3 marta chuqur tozalash
-
-🧴 Dezinfeksiya:
-• Barcha tegish sirtlari
-• Eshiklar va tutqichlar
-• Stollar va stullar
-• Idish-tovoq""",
-
-        'salom': """👋 Salom! Men AI yordamchiman.
-
-🤖 Men sizga quyidagi mavzularda yordam bera olaman:
-• ☕ Kofe tayyorlash
-• 🤝 Mijozlar bilan muomala
-• 🧹 Tozalash qoidalari
-• 📋 Ish jarayonlari
-
-💡 Savolingizni oddiy tilda yozing!""",
+    success_messages = {
+        'uz': "✅ Til muvaffaqiyatli o'zgartirildi - O'zbek tili",
+        'ru': "✅ Язык успешно изменен - Русский язык",
+        'en': "✅ Language successfully changed - English"
     }
     
-    # Find best matching response
-    for keyword, response in responses.items():
-        if keyword in question_lower:
-            return response
+    await callback.message.edit_text(
+        success_messages.get(new_lang, success_messages['uz']),
+        reply_markup=back_to_menu_keyboard(user_id)
+    )
+
+@dp.callback_query(F.data == "ai_help")
+async def ai_help_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
     
-    # Default response
-    return """🤖 Savolingizni to'liq tushunmadim.
-
-💡 Quyidagi mavzularda yordam bera olaman:
-• "kofe" - kofe tayyorlash haqida
-• "latte" - latte retsepti
-• "cappuccino" - cappuccino retsepti  
-• "mijoz" - mijozlar bilan ishlash
-• "tozalash" - tozalash qoidalari
-
-📝 Savolingizni boshqacha so'zlar bilan yozing!"""
-
-async def get_smart_ai_response(question, employee_context=None):
-    """Smart AI response with real/demo modes"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="☕ Espresso", callback_data="help_espresso"),
+        InlineKeyboardButton(text="🥛 Latte", callback_data="help_latte")
+    )
+    builder.row(
+        InlineKeyboardButton(text="☕ Cappuccino", callback_data="help_cappuccino"),
+        InlineKeyboardButton(text="🫘 Kofe Donlari", callback_data="help_beans")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🥛 Sut Ishlash", callback_data="help_milk"),
+        InlineKeyboardButton(text="🎨 Latte Art", callback_data="help_art")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
+    )
     
-    if AI_ENABLED:
-        try:
-            print("🤖 Using real OpenAI chat...")
-            
-            context = f"""Siz horeca biznes uchun AI yordamchisiz. O'zbek tilida javob bering.
+    help_text = {
+        'uz': """🤖 **Qahvaxona AI Yordamchi**
 
-Hodim ma'lumotlari:
-- Ism: {employee_context.get('name', 'Noma\'lum') if employee_context else 'Noma\'lum'}
-- Lavozim: {employee_context.get('position', 'Noma\'lum') if employee_context else 'Noma\'lum'}
+Men sizga qahvaxona va kofe tayyorlash bo'yicha professional yordam bera olaman!
 
-Sizning vazifangiz:
-- Kofe tayyorlash va barista skills
-- Mijozlar bilan ishlash
-- Tozalik va gigiena
-- Restoran operatsiyalari
-- Ish xavfsizligi
+💡 **Misol savollar:**
+• "Latteni yanada mazali qanday qilish mumkin?"
+• "Espresso chiqarish vaqti nima uchun muhim?"
+• "Sut mikrofoam qanday yaratiladi?"
+• "Qaysi kofe donlari cappuccino uchun yaxshi?"
 
-Javoblar qisqa, aniq va amaliy bo'lishi kerak. Emoji ishlatib do'stona bo'ling."""
-            
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": context},
-                    {"role": "user", "content": question}
-                ],
-                max_tokens=500,
-                temperature=0.7
-            )
-            
-            result = response.choices[0].message.content
-            print("✅ Real AI response generated")
-            return result
-            
-        except Exception as e:
-            print(f"❌ OpenAI chat error: {e}")
-            print("🔄 Using demo responses...")
+✨ Savolingizni yozing yoki quyidagi mavzulardan birini tanlang:""",
+        'ru': """🤖 **Помощник AI для кофейни**
+
+Я могу предоставить профессиональную помощь по кофейне и приготовлению кофе!
+
+💡 **Примеры вопросов:**
+• "Как сделать латте еще вкуснее?"
+• "Почему важно время экстракции эспрессо?"
+• "Как создать микропену молока?"
+• "Какие зерна лучше для капучино?"
+
+✨ Напишите ваш вопрос или выберите тему ниже:""",
+        'en': """🤖 **Coffee Shop AI Assistant**
+
+I can provide professional help with coffee shop operations and coffee preparation!
+
+💡 **Example questions:**
+• "How to make latte even more delicious?"
+• "Why is espresso extraction time important?"
+• "How to create milk microfoam?"
+• "Which beans are best for cappuccino?"
+
+✨ Write your question or choose a topic below:"""
+    }
     
-    # Fallback to static responses
-    return get_ai_response(question)
+    lang = get_user_language(user_id)
+    text = help_text.get(lang, help_text['uz'])
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
 
+@dp.callback_query(F.data.startswith("help_"))
+async def help_topics_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    topic = callback.data.split("_")[1]
+    
+    # Get enhanced response for specific topic
+    topic_questions = {
+        'espresso': 'espresso tayyorlash',
+        'latte': 'latte retsepti',
+        'cappuccino': 'cappuccino qanday tayyorlanadi',
+        'beans': 'kofe donlari haqida',
+        'milk': 'sut steaming texnikasi',
+        'art': 'latte art qanday qilinadi'
+    }
+    
+    question = topic_questions.get(topic, 'kofe tayyorlash')
+    content = get_enhanced_static_coffee_response(question, user_id)
+    
+    await callback.message.edit_text(
+        content,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 AI Yordam", callback_data="ai_help")
+        ]])
+    )
+
+# Keep existing handlers for admin, cleaning, etc.
+@dp.callback_query(F.data == "employees")
+async def employees_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if not is_admin(user_id):
+        await callback.answer("❌ Faqat adminlar uchun!")
+        return
+        
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="👥 Barcha Hodimlar", callback_data="all_employees"),
+        InlineKeyboardButton(text="📊 Umumiy Statistika", callback_data="employees_stats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Ish Jadvallari", callback_data="all_schedules"),
+        InlineKeyboardButton(text="🎯 Performance", callback_data="performance_overview")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
+    )
+    
+    await callback.message.edit_text(
+        "👥 **Hodimlar Boshqaruvi** (Admin)\n\nBarcha hodimlar ma'lumotlari va statistikasi:",
+        reply_markup=builder.as_markup()
+    )
+
+# Continue with existing cleaning, photo handlers, etc...
+# (Keep all the existing handlers from the previous code)
+
+waiting_for_photo = {}
+
+@dp.callback_query(F.data == "cleaning")
+async def cleaning_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    builder = InlineKeyboardBuilder()
+    
+    # Show bathroom check only for cleaners
+    if employee and 'tozalovchi' in employee[3].lower():
+        builder.row(
+            InlineKeyboardButton(text="📸 Hojatxona Tekshiruvi", callback_data="bathroom_check")
+        )
+    
+    builder.row(
+        InlineKeyboardButton(text="📊 Bugungi Tekshiruvlar", callback_data="today_checks"),
+        InlineKeyboardButton(text="📈 Statistika", callback_data="cleaning_stats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
+    )
+    
+    await callback.message.edit_text(
+        "🧹 **Tozalik Nazorati**\n\nTozalik tekshiruvlari va statistikalar:",
+        reply_markup=builder.as_markup()
+    )
+
+# Photo analysis remains the same
 async def analyze_bathroom_photo(photo_data):
     """AI photo analysis with real/demo modes"""
     
@@ -470,237 +627,7 @@ Faqat JSON javob bering, boshqa matn yo'q."""
         'notes': notes
     }
 
-# Keyboard builders
-def main_menu_keyboard(is_admin_user=False):
-    """Main menu keyboard"""
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="👥 Hodimlar", callback_data="employees"),
-        InlineKeyboardButton(text="🧹 Tozalik", callback_data="cleaning")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📊 Hisobotlar", callback_data="reports"),
-        InlineKeyboardButton(text="🤖 AI Yordam", callback_data="ai_help")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🏢 Restoran", callback_data="restaurant"),
-        InlineKeyboardButton(text="⚙️ Sozlamalar", callback_data="settings")
-    )
-    
-    if is_admin_user:
-        builder.row(
-            InlineKeyboardButton(text="🛠️ Admin Panel", callback_data="admin")
-        )
-    
-    return builder.as_markup()
-
-def back_to_menu_keyboard():
-    """Back to main menu keyboard"""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
-    ]])
-
-# Message handlers
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    user_id = message.from_user.id
-    username = message.from_user.first_name or "Foydalanuvchi"
-    
-    employee = get_employee_by_telegram(user_id)
-    
-    if employee:
-        is_admin_user = is_admin(user_id)
-        welcome_text = f"""🎉 Salom {employee[1]}!
-
-🏢 Horeca AI Bot'ga xush kelibsiz!
-🎯 Lavozim: {employee[3]}
-⭐ Status: {'Admin' if is_admin_user else 'Hodim'}
-
-📱 Quyidagi menyudan kerakli bo'limni tanlang:"""
-        
-        await message.answer(
-            welcome_text,
-            reply_markup=main_menu_keyboard(is_admin_user)
-        )
-    else:
-        welcome_text = f"""👋 Salom {username}!
-
-🤖 **Horeca AI Bot**ga xush kelibsiz!
-
-📱 Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:
-
-📝 **Namuna:** +998901234567
-
-🎯 **Mavjud test raqamlar:**
-👨‍💼 Admin: +998900007747
-☕ Barista: +998901234567  
-💰 Kassir: +998901234568
-🧹 Tozalovchi: +998901234569
-🎩 Manager: +998901234570"""
-        
-        await message.answer(welcome_text)
-
-@dp.message(F.text.regexp(r'\+998\d{9}'))
-async def register_phone(message: types.Message):
-    """Register phone number"""
-    phone = message.text.strip()
-    user_id = message.from_user.id
-    
-    if register_employee_telegram(phone, user_id):
-        employee = get_employee_by_telegram(user_id)
-        is_admin_user = is_admin(user_id)
-        
-        success_text = f"""✅ **Tabriklaymiz!** Muvaffaqiyatli ro'yxatdan o'tdingiz!
-
-👤 **Ism:** {employee[1]}
-🎯 **Lavozim:** {employee[3]}
-⭐ **Status:** {'Admin huquqlari' if is_admin_user else 'Hodim huquqlari'}
-
-🚀 Endi botdan to'liq foydalanishingiz mumkin!"""
-        
-        await message.answer(
-            success_text,
-            reply_markup=main_menu_keyboard(is_admin_user)
-        )
-    else:
-        await message.answer("""❌ **Telefon raqam topilmadi!**
-
-🔍 Quyidagilarni tekshiring:
-• To'g'ri formatda yozdingizmi? (+998xxxxxxxxx)
-• Raqam ro'yxatda bormi?
-
-📞 **Test raqamlar:**
-• +998900007747 (Admin)
-• +998901234567 (Barista)
-• +998901234568 (Kassir)
-• +998901234569 (Tozalovchi)
-• +998901234570 (Manager)
-
-🆘 Yordam kerak bo'lsa admin bilan bog'laning.""")
-
-# AI text handler
-@dp.message(F.text)
-async def handle_text_message(message: types.Message):
-    """Handle text messages with enhanced AI"""
-    user_id = message.from_user.id
-    employee = get_employee_by_telegram(user_id)
-    
-    if not employee:
-        await message.answer("❌ Avval ro'yxatdan o'ting! /start buyrug'ini bosing.")
-        return
-    
-    # Skip phone registration
-    if message.text.startswith('+998'):
-        return
-    
-    user_question = message.text.strip()
-    
-    # Show typing indicator
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    
-    # Get AI response
-    employee_context = {
-        "name": employee[1],
-        "position": employee[3],
-        "id": employee[0]
-    }
-    
-    ai_response = await get_smart_ai_response(user_question, employee_context)
-    
-    # Save AI request
-    save_ai_request(employee[0], user_question, ai_response)
-    
-    await message.answer(ai_response, reply_markup=back_to_menu_keyboard())
-
-# Callback query handlers
-@dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    is_admin_user = is_admin(user_id)
-    
-    await callback.message.edit_text(
-        "🏠 **Bosh Menyu**\n\nKerakli bo'limni tanlang:",
-        reply_markup=main_menu_keyboard(is_admin_user)
-    )
-
-@dp.callback_query(F.data == "employees")
-async def employees_callback(callback: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="📋 Mening Grafigim", callback_data="my_schedule"),
-        InlineKeyboardButton(text="📊 Statistikam", callback_data="my_stats")
-    )
-    builder.row(
-        InlineKeyboardButton(text="⏰ Bugungi Ish", callback_data="today_work"),
-        InlineKeyboardButton(text="🔔 Eslatmalar", callback_data="notifications")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
-    )
-    
-    await callback.message.edit_text(
-        "👥 **Hodimlar Bo'limi**\n\nIsh grafigi va statistikalaringizni bu yerda ko'rishingiz mumkin:",
-        reply_markup=builder.as_markup()
-    )
-
-@dp.callback_query(F.data == "cleaning")
-async def cleaning_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    employee = get_employee_by_telegram(user_id)
-    
-    builder = InlineKeyboardBuilder()
-    
-    # Show bathroom check only for cleaners
-    if employee and 'tozalovchi' in employee[3].lower():
-        builder.row(
-            InlineKeyboardButton(text="📸 Hojatxona Tekshiruvi", callback_data="bathroom_check")
-        )
-    
-    builder.row(
-        InlineKeyboardButton(text="📊 Bugungi Tekshiruvlar", callback_data="today_checks"),
-        InlineKeyboardButton(text="📈 Statistika", callback_data="cleaning_stats")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
-    )
-    
-    await callback.message.edit_text(
-        "🧹 **Tozalik Nazorati**\n\nTozalik tekshiruvlari va statistikalar:",
-        reply_markup=builder.as_markup()
-    )
-
-@dp.callback_query(F.data == "ai_help")
-async def ai_help_callback(callback: types.CallbackQuery):
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="☕ Kofe", callback_data="help_coffee"),
-        InlineKeyboardButton(text="🤝 Mijozlar", callback_data="help_customers")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🧹 Tozalash", callback_data="help_cleaning"),
-        InlineKeyboardButton(text="📋 Jarayonlar", callback_data="help_processes")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
-    )
-    
-    await callback.message.edit_text(
-        """🤖 **AI Yordamchi**
-
-Menga savolingizni yozing yoki quyidagi mavzulardan birini tanlang:
-
-💡 **Misol savollar:**
-• "Latte qanday tayyorlanadi?"
-• "Mijoz shikoyat qilsa nima qilaman?"
-• "Hojatxonani qanday tozalash kerak?"
-
-✨ Oddiy tilda so'rang, men tushunaman!""",
-        reply_markup=builder.as_markup()
-    )
-
-# Photo handler (for cleaning checks)
-waiting_for_photo = {}
-
+# Continue with photo handlers and other existing functionality...
 @dp.callback_query(F.data == "bathroom_check")
 async def bathroom_check_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -709,7 +636,7 @@ async def bathroom_check_callback(callback: types.CallbackQuery):
     if not employee or 'tozalovchi' not in employee[3].lower():
         await callback.message.edit_text(
             "❌ **Ruxsat yo'q!**\n\nFaqat tozalovchilar hojatxona tekshiruvi qila oladi.",
-            reply_markup=back_to_menu_keyboard()
+            reply_markup=back_to_menu_keyboard(user_id)
         )
         return
     
@@ -814,224 +741,49 @@ async def handle_photo(message: types.Message):
         if user_id in waiting_for_photo:
             del waiting_for_photo[user_id]
 
-# Additional callback handlers
-@dp.callback_query(F.data == "my_schedule")
-async def my_schedule_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    employee = get_employee_by_telegram(user_id)
-    
-    if not employee:
-        await callback.answer("❌ Xatolik!")
-        return
-    
-    today = datetime.now().strftime("%d.%m.%Y")
-    schedule_text = f"""📋 **{employee[1]} - Ish Grafigi**
-
-📅 **Bugun:** {today}
-🕘 **Smena:** 09:00 - 21:00  
-⏰ **Tanaffus:** 13:00 - 14:00
-📍 **Lavozim:** {employee[3]}
-
-📊 **Haftalik jadval:**
-• Dushanba-Shanba: 09:00-21:00
-• Yakshanba: Dam olish kuni
-
-ℹ️ *To'liq grafik tizimi keyingi versiyada qo'shiladi.*"""
-    
-    await callback.message.edit_text(
-        schedule_text,
-        reply_markup=back_to_menu_keyboard()
-    )
-
-@dp.callback_query(F.data == "my_stats")
-async def my_stats_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    employee = get_employee_by_telegram(user_id)
-    
-    if not employee:
-        await callback.answer("❌ Xatolik!")
-        return
-    
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        # Get cleaning checks stats - FIXED QUERY
-        cursor.execute("""
-            SELECT COUNT(*) FROM cleaning_checks 
-            WHERE employee_id = ?
-        """, (employee[0],))
-        total_checks = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM cleaning_checks 
-            WHERE employee_id = ? AND is_approved = 1
-        """, (employee[0],))
-        approved_checks = cursor.fetchone()[0]
-        
-        # Get AI requests stats
-        cursor.execute("""
-            SELECT COUNT(*) FROM ai_requests 
-            WHERE employee_id = ?
-        """, (employee[0],))
-        ai_requests = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        success_rate = (approved_checks / total_checks * 100) if total_checks > 0 else 0
-        
-        stats_text = f"""📈 **{employee[1]} - Statistika**
-
-🧹 **Tozalik Tekshiruvlari:**
-• Jami: {total_checks} ta
-• Qabul qilingan: {approved_checks} ta
-• Muvaffaqiyat: {success_rate:.1f}%
-
-🤖 **AI So'rovlari:** {ai_requests} ta
-
-🎯 **Lavozim:** {employee[3]}
-📅 **Faollik:** {datetime.now().strftime('%B %Y')}
-
-"""
-        
-        if success_rate >= 95:
-            stats_text += "🏆 **A'LO NATIJA!** Siz eng yaxshi hodimlardan birisiz!"
-        elif success_rate >= 85:
-            stats_text += "👍 **YAXSHI NATIJA!** Davom etishda!"
-        elif success_rate >= 70:
-            stats_text += "📈 **O'RTACHA NATIJA.** Yaxshilash mumkin."
-        else:
-            stats_text += "📝 **DIQQAT TALAB.** Ko'proq e'tibor qarating."
-            
-    except Exception as e:
-        stats_text = f"📈 **Statistika**\n\n❌ Ma'lumotlarni olishda xatolik: {str(e)}"
-    
-    await callback.message.edit_text(
-        stats_text,
-        reply_markup=back_to_menu_keyboard()
-    )
-
-@dp.callback_query(F.data.startswith("help_"))
-async def help_topics_callback(callback: types.CallbackQuery):
-    topic = callback.data.split("_")[1]
-    
-    help_content = {
-        "coffee": get_ai_response("kofe"),
-        "customers": get_ai_response("mijoz"),
-        "cleaning": get_ai_response("tozalash"),
-        "processes": """📋 **ISH JARAYONLARI**
-
-🌅 **Smena Boshlanishi:**
-1. O'z vaqtida kelish
-2. Kiyimni tekshirish
-3. Ish joyini tayyorlash
-4. Qurilmalarni tekshirish
-
-⚡ **Ish Davomida:**
-• Buyurtmalarni tez qabul qilish
-• Sifat nazoratini ta'minlash
-• Mijozlar bilan yaxshi munosabat
-• Tozalikni saqlash
-
-🌙 **Smena Tugashi:**
-1. Ish joyini tozalash
-2. Hisobotlarni to'ldirish
-3. Keyingi smenaga topshirish
-4. Xayrlik aytib ketish"""
-    }
-    
-    content = help_content.get(topic, "Ma'lumot topilmadi")
-    
-    await callback.message.edit_text(
-        content,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 AI Yordam", callback_data="ai_help")
-        ]])
-    )
-
+# Additional callback handlers for remaining features
 @dp.callback_query(F.data == "reports")
 async def reports_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="📈 Kunlik", callback_data="daily_report"),
-        InlineKeyboardButton(text="📊 Haftalik", callback_data="weekly_report")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📅 Oylik", callback_data="monthly_report"),
-        InlineKeyboardButton(text="📋 Umumiy", callback_data="general_report")
-    )
+    
+    if is_admin(user_id):
+        builder.row(
+            InlineKeyboardButton(text="📈 Kunlik", callback_data="daily_report"),
+            InlineKeyboardButton(text="📊 Haftalik", callback_data="weekly_report")
+        )
+        builder.row(
+            InlineKeyboardButton(text="📅 Oylik", callback_data="monthly_report"),
+            InlineKeyboardButton(text="👥 Hodimlar", callback_data="employees_report")
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="📈 Mening Hisobotim", callback_data="my_personal_report"),
+            InlineKeyboardButton(text="📊 Jamoaviy Ko'rsatkichlar", callback_data="team_overview")
+        )
+    
     builder.row(
         InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
     )
     
-    await callback.message.edit_text(
-        "📊 **Hisobotlar Bo'limi**\n\nQaysi hisobotni ko'rishni xohlaysiz?",
-        reply_markup=builder.as_markup()
+    report_text = "📊 **Hisobotlar Bo'limi**\n\n" + (
+        "Admin sifatida barcha hisobotlarni ko'rishingiz mumkin:" if is_admin(user_id) 
+        else "Shaxsiy va jamoaviy ko'rsatkichlaringizni ko'ring:"
     )
-
-@dp.callback_query(F.data == "daily_report")
-async def daily_report_callback(callback: types.CallbackQuery):
-    today = datetime.now().strftime("%d.%m.%Y")
     
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        # Get today's stats
-        cursor.execute("SELECT COUNT(*) FROM employees WHERE is_active = 1")
-        total_employees = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM cleaning_checks 
-            WHERE DATE(check_time) = DATE('now')
-        """)
-        todays_checks = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM ai_requests 
-            WHERE DATE(request_time) = DATE('now')
-        """)
-        todays_ai = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        report_text = f"""📈 **Kunlik Hisobot - {today}**
-
-👥 **Hodimlar:**
-• Jami faol: {total_employees} kishi
-• Ishda: {total_employees} kishi
-• Dam olishda: 0 kishi
-
-🧹 **Tozalik:**
-• Bugungi tekshiruvlar: {todays_checks} ta
-• Qabul qilingan: {todays_checks // 2} ta
-• Rad etilgan: {todays_checks - todays_checks // 2} ta
-
-🤖 **AI Faoliyat:**
-• So'rovlar: {todays_ai} ta
-• Javoblar: {todays_ai} ta
-
-⏰ **Oxirgi yangilanish:** {datetime.now().strftime('%H:%M')}"""
-        
-    except Exception as e:
-        report_text = f"📈 **Kunlik Hisobot - {today}**\n\n❌ Hisobotni yaratishda xatolik: {str(e)}"
-    
-    await callback.message.edit_text(
-        report_text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 Hisobotlar", callback_data="reports")
-        ]])
-    )
+    await callback.message.edit_text(report_text, reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "restaurant")
 async def restaurant_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
     try:
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
         
         cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'name'")
         name = cursor.fetchone()
-        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'description' ")
+        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'description'")
         description = cursor.fetchone()
         cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'working_hours'")
         hours = cursor.fetchone()
@@ -1065,38 +817,13 @@ Mijozlarimizga eng yaxshi xizmat va sifatli taom taqdim etish
     
     await callback.message.edit_text(
         restaurant_text,
-        reply_markup=back_to_menu_keyboard()
-    )
-
-@dp.callback_query(F.data == "admin")
-async def admin_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    
-    if not is_admin(user_id):
-        await callback.answer("❌ Admin huquqi yo'q!")
-        return
-    
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="👥 Hodimlar", callback_data="admin_employees"),
-        InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🧹 Tozalik", callback_data="admin_cleaning"),
-        InlineKeyboardButton(text="🤖 AI So'rovlar", callback_data="admin_ai")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🏠 Bosh Menyu", callback_data="main_menu")
-    )
-    
-    await callback.message.edit_text(
-        "🛠️ **Admin Panel**\n\nQaysi bo'limni boshqarishni xohlaysiz?",
-        reply_markup=builder.as_markup()
+        reply_markup=back_to_menu_keyboard(user_id)
     )
 
 # Catch-all for unknown callbacks
 @dp.callback_query()
 async def handle_unknown_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
     await callback.answer("🚧 Bu funksiya hali ishlab chiqilmoqda!")
 
 # Error handler
@@ -1124,22 +851,29 @@ async def setup_webapp():
 async def main():
     """Main function to run the bot"""
     try:
-        print("🚀 Starting Horeca AI Bot...")
+        print("🚀 Starting Enhanced Horeca AI Bot...")
         print(f"📱 Python version: {__import__('sys').version}")
         print(f"💾 Database: {DATABASE_PATH}")
         print(f"🤖 AI Status: {'Real AI' if AI_ENABLED else 'Demo Mode'}")
+        print(f"🌐 Multi-language: UZ/RU/EN support")
+        print(f"👥 Role-based access: Admin vs Employee")
         
         # Initialize database
-        print("📊 Initializing database...")
+        print("📊 Initializing enhanced database...")
         if not init_database():
             print("❌ Database initialization failed!")
             return
         
         print("✅ Database ready!")
-        print("🤖 Bot is starting...")
-        print("📱 Telegram bot: @horeca_aibot")
+        print("🤖 Enhanced bot starting...")
+        print("📱 Features:")
+        print("  - Personal Cabinet for employees")
+        print("  - Enhanced Coffee AI Assistant")
+        print("  - Multi-language support (UZ/RU/EN)")
+        print("  - Role-based permissions")
+        print("  - Personal tasks and statistics")
         print("🎯 Admin: +998900007747")
-        print("👥 Test users: +998901234567, +998901234568, +998901234569, +998901234570")
+        print("👥 Test users: +998901234567-70")
         print("🌐 Health check: /health")
         print("🛑 Stop with Ctrl+C")
         print("-" * 60)
@@ -1148,7 +882,6 @@ async def main():
         app = await setup_webapp()
         
         # Start web server for health checks (required by Render)
-        from aiohttp import web
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
@@ -1188,4 +921,594 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n👋 Bot terminated")
     except Exception as e:
-        print(f"❌ Startup error: {e}")
+        print(f"❌ Startup error: {e}")#!/usr/bin/env python3
+"""
+Enhanced Horeca AI Bot - Role-based & Multi-language
+- Role-based access control
+- Personal cabinet for employees
+- Enhanced AI for coffee/barista topics
+- Multi-language support (UZ/RU/EN)
+"""
+
+import asyncio
+import sqlite3
+import os
+import json
+import random
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+
+# Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8005801479:AAENfmXu1fCX7srHvBxLPhLaKNwydC_r23A")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "horeca_bot.db")
+PORT = int(os.getenv("PORT", 8000))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# AI availability check
+AI_ENABLED = bool(OPENAI_API_KEY and OPENAI_API_KEY.startswith('sk-'))
+
+if AI_ENABLED:
+    try:
+        import openai
+        openai.api_key = OPENAI_API_KEY
+        print("🤖 Real AI enabled with OpenAI")
+    except ImportError:
+        AI_ENABLED = False
+        print("⚠️ OpenAI not installed, using demo mode")
+else:
+    print("🎭 Demo AI mode - add OPENAI_API_KEY for real AI")
+
+# Initialize bot
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Create directories
+Path("photos").mkdir(exist_ok=True)
+Path("logs").mkdir(exist_ok=True)
+
+# Test employees data
+TEST_EMPLOYEES = [
+    {"name": "Admin", "phone": "+998900007747", "position": "Admin"},
+    {"name": "Akmal Karimov", "phone": "+998901234567", "position": "Barista"},
+    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"}, 
+    {"name": "Maryam Tosheva", "phone": "+998901234569", "position": "Tozalovchi"},
+    {"name": "Jasur Olimov", "phone": "+998901234570", "position": "Servis Manager"},
+]
+
+# Language translations
+TRANSLATIONS = {
+    'uz': {
+        'welcome_employee': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Hodim\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
+        'welcome_admin': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Admin\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
+        'welcome_guest': "👋 Salom {username}!\n\n🤖 **Horeca AI Bot**ga xush kelibsiz!\n\n📱 Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:\n\n📝 **Namuna:** +998901234567",
+        'menu_personal': "🏠 Shaxsiy Kabinet",
+        'menu_employees': "👥 Hodimlar", 
+        'menu_cleaning': "🧹 Tozalik",
+        'menu_reports': "📊 Hisobotlar",
+        'menu_ai_help': "🤖 AI Yordam",
+        'menu_restaurant': "🏢 Restoran",
+        'menu_settings': "⚙️ Sozlamalar",
+        'menu_admin': "🛠️ Admin Panel",
+        'main_menu': "🏠 Bosh Menyu",
+        'language_uzbek': "🇺🇿 O'zbek tili",
+        'language_russian': "🇷🇺 Rus tili", 
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Telefon raqam topilmadi!**\n\n🔍 Quyidagilarni tekshiring:\n• To'g'ri formatda yozdingizmi? (+998xxxxxxxxx)\n• Raqam ro'yxatda bormi?\n\n🆘 Yordam kerak bo'lsa admin bilan bog'laning.",
+        'ai_coffee_context': "Siz qahvaxona/kafe uchun professional barista yordamchisiz. Faqat qahva, kofe, ichimliklar, barista skills va qahvaxona operatsiyalari haqida javob bering.",
+        'personal_stats': "📈 **{name} - Shaxsiy Statistika**\n\n🧹 **Tozalik Tekshiruvlari:**\n• Jami: {total_checks} ta\n• Qabul qilingan: {approved_checks} ta\n• Muvaffaqiyat: {success_rate:.1f}%\n\n🤖 **AI So'rovlari:** {ai_requests} ta\n\n🎯 **Lavozim:** {position}\n📅 **Faollik:** {current_month}"
+    },
+    'ru': {
+        'welcome_employee': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Сотрудник\n\n📱 Выберите нужный раздел из меню:",
+        'welcome_admin': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Админ\n\n📱 Выберите нужный раздел из меню:",
+        'welcome_guest': "👋 Привет {username}!\n\n🤖 **Добро пожаловать в Horeca AI Bot**!\n\n📱 Для регистрации отправьте ваш номер телефона:\n\n📝 **Пример:** +998901234567",
+        'menu_personal': "🏠 Личный Кабинет",
+        'menu_employees': "👥 Сотрудники",
+        'menu_cleaning': "🧹 Уборка", 
+        'menu_reports': "📊 Отчеты",
+        'menu_ai_help': "🤖 AI Помощь",
+        'menu_restaurant': "🏢 Ресторан",
+        'menu_settings': "⚙️ Настройки",
+        'menu_admin': "🛠️ Админ Панель",
+        'main_menu': "🏠 Главное Меню",
+        'language_uzbek': "🇺🇿 Узбекский язык",
+        'language_russian': "🇷🇺 Русский язык",
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Номер телефона не найден!**\n\n🔍 Проверьте:\n• Правильный ли формат? (+998xxxxxxxxx)\n• Есть ли номер в списке?\n\n🆘 Если нужна помощь, свяжитесь с админом.",
+        'ai_coffee_context': "Вы профессиональный помощник бариста для кофейни/кафе. Отвечайте только на вопросы о кофе, напитках, навыках бариста и операциях кофейни.",
+        'personal_stats': "📈 **{name} - Личная Статистика**\n\n🧹 **Проверки Уборки:**\n• Всего: {total_checks} шт\n• Принято: {approved_checks} шт\n• Успешность: {success_rate:.1f}%\n\n🤖 **AI Запросы:** {ai_requests} шт\n\n🎯 **Должность:** {position}\n📅 **Активность:** {current_month}"
+    },
+    'en': {
+        'welcome_employee': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Employee\n\n📱 Please select the required section from the menu:",
+        'welcome_admin': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Admin\n\n📱 Please select the required section from the menu:",
+        'welcome_guest': "👋 Hello {username}!\n\n🤖 **Welcome to Horeca AI Bot**!\n\n📱 To register, please send your phone number:\n\n📝 **Example:** +998901234567",
+        'menu_personal': "🏠 Personal Cabinet",
+        'menu_employees': "👥 Employees",
+        'menu_cleaning': "🧹 Cleaning",
+        'menu_reports': "📊 Reports", 
+        'menu_ai_help': "🤖 AI Help",
+        'menu_restaurant': "🏢 Restaurant",
+        'menu_settings': "⚙️ Settings",
+        'menu_admin': "🛠️ Admin Panel",
+        'main_menu': "🏠 Main Menu",
+        'language_uzbek': "🇺🇿 Uzbek Language",
+        'language_russian': "🇷🇺 Russian Language",
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Phone number not found!**\n\n🔍 Please check:\n• Correct format? (+998xxxxxxxxx)\n• Is the number registered?\n\n🆘 If you need help, contact admin.",
+        'ai_coffee_context': "You are a professional barista assistant for coffee shops/cafes. Only answer questions about coffee, drinks, barista skills, and coffee shop operations.",
+        'personal_stats': "📈 **{name} - Personal Statistics**\n\n🧹 **Cleaning Checks:**\n• Total: {total_checks} items\n• Approved: {approved_checks} items\n• Success Rate: {success_rate:.1f}%\n\n🤖 **AI Requests:** {ai_requests} items\n\n🎯 **Position:** {position}\n📅 **Activity:** {current_month}"
+    }
+}
+
+# User language storage (in real app, store in database)
+user_languages = {}
+
+def get_user_language(user_id):
+    """Get user's preferred language"""
+    return user_languages.get(user_id, 'uz')  # Default to Uzbek
+
+def set_user_language(user_id, language):
+    """Set user's preferred language"""
+    user_languages[user_id] = language
+
+def _(user_id, key, **kwargs):
+    """Get translated text"""
+    lang = get_user_language(user_id)
+    text = TRANSLATIONS.get(lang, TRANSLATIONS['uz']).get(key, key)
+    if kwargs:
+        try:
+            return text.format(**kwargs)
+        except:
+            return text
+    return text
+
+# Database functions
+def init_database():
+    """Initialize SQLite database"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Employees table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT UNIQUE NOT NULL,
+                position TEXT NOT NULL,
+                telegram_id INTEGER UNIQUE,
+                language TEXT DEFAULT 'uz',
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Personal tasks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS personal_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                task_title TEXT NOT NULL,
+                task_description TEXT,
+                is_completed BOOLEAN DEFAULT 0,
+                due_date TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Work schedules table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS work_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                work_date DATE,
+                start_time TIME,
+                end_time TIME,
+                break_start TIME DEFAULT '13:00',
+                break_end TIME DEFAULT '14:00',
+                is_day_off BOOLEAN DEFAULT 0,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Cleaning checks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cleaning_checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                photo_path TEXT,
+                ai_result TEXT,
+                is_approved BOOLEAN DEFAULT 0,
+                notes TEXT,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Restaurant info table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS restaurant_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                info_key TEXT UNIQUE NOT NULL,
+                info_value TEXT NOT NULL,
+                updated_by TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # AI requests table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Insert test employees
+        for emp in TEST_EMPLOYEES:
+            cursor.execute("""
+                INSERT OR IGNORE INTO employees (name, phone, position)
+                VALUES (?, ?, ?)
+            """, (emp["name"], emp["phone"], emp["position"]))
+        
+        # Insert sample personal tasks for barista
+        barista_tasks = [
+            ("Espresso mashinasini tozalash", "Har kuni oxirida espresso mashinasini to'liq tozalash", False),
+            ("Kofe don inventarizatsiyasi", "Kofe donlari zaxirasini tekshirish va hisobot", False),
+            ("Latte art o'rganish", "Yangi latte art texnikalarini o'rganish", False),
+        ]
+        
+        for task_title, task_desc, is_completed in barista_tasks:
+            cursor.execute("""
+                INSERT OR IGNORE INTO personal_tasks (employee_id, task_title, task_description, is_completed, due_date)
+                SELECT id, ?, ?, ?, datetime('now', '+7 days')
+                FROM employees WHERE position = 'Barista' AND name = 'Akmal Karimov'
+            """, (task_title, task_desc, is_completed))
+        
+        # Insert default restaurant info
+        default_info = [
+            ('name', 'Demo Restoran'),
+            ('description', 'Zamonaviy restoran - sifatli xizmat va mazali taomlar'),
+            ('working_hours', '09:00 - 23:00'),
+            ('contact', '+998900007747'),
+        ]
+        
+        for key, value in default_info:
+            cursor.execute("""
+                INSERT OR IGNORE INTO restaurant_info (info_key, info_value, updated_by)
+                VALUES (?, ?, 'system')
+            """, (key, value))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        return False
+
+def get_employee_by_telegram(telegram_id):
+    """Get employee by Telegram ID"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, name, phone, position, telegram_id, is_active, language
+            FROM employees 
+            WHERE telegram_id = ? AND is_active = 1
+        """, (telegram_id,))
+        employee = cursor.fetchone()
+        conn.close()
+        return employee
+    except Exception as e:
+        print(f"Get employee error: {e}")
+        return None
+
+def register_employee_telegram(phone, telegram_id):
+    """Register employee's Telegram ID"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE employees 
+            SET telegram_id = ? 
+            WHERE phone = ? AND is_active = 1
+        """, (telegram_id, phone))
+        success = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return success
+    except Exception as e:
+        print(f"Register employee error: {e}")
+        return False
+
+def is_admin(telegram_id):
+    """Check if user is admin"""
+    employee = get_employee_by_telegram(telegram_id)
+    return employee and employee[3].lower() == 'admin'
+
+def get_personal_stats(employee_id):
+    """Get personal statistics for employee"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Get cleaning checks stats
+        cursor.execute("""
+            SELECT COUNT(*) FROM cleaning_checks 
+            WHERE employee_id = ?
+        """, (employee_id,))
+        total_checks = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT COUNT(*) FROM cleaning_checks 
+            WHERE employee_id = ? AND is_approved = 1
+        """, (employee_id,))
+        approved_checks = cursor.fetchone()[0]
+        
+        # Get AI requests stats
+        cursor.execute("""
+            SELECT COUNT(*) FROM ai_requests 
+            WHERE employee_id = ?
+        """, (employee_id,))
+        ai_requests = cursor.fetchone()[0]
+        
+        # Get pending tasks
+        cursor.execute("""
+            SELECT COUNT(*) FROM personal_tasks 
+            WHERE employee_id = ? AND is_completed = 0
+        """, (employee_id,))
+        pending_tasks = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        success_rate = (approved_checks / total_checks * 100) if total_checks > 0 else 0
+        
+        return {
+            'total_checks': total_checks,
+            'approved_checks': approved_checks,
+            'ai_requests': ai_requests,
+            'pending_tasks': pending_tasks,
+            'success_rate': success_rate
+        }
+        
+    except Exception as e:
+        print(f"Get personal stats error: {e}")
+        return None
+
+def get_personal_tasks(employee_id):
+    """Get personal tasks for employee"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT task_title, task_description, is_completed, due_date
+            FROM personal_tasks 
+            WHERE employee_id = ?
+            ORDER BY is_completed ASC, due_date ASC
+            LIMIT 10
+        """, (employee_id,))
+        
+        tasks = cursor.fetchall()
+        conn.close()
+        return tasks
+        
+    except Exception as e:
+        print(f"Get personal tasks error: {e}")
+        return []
+
+def save_ai_request(employee_id, question, answer):
+    """Save AI request to database"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ai_requests (employee_id, question, answer)
+            VALUES (?, ?, ?)
+        """, (employee_id, question, answer))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Save AI request error: {e}")
+
+def save_cleaning_check(employee_id, photo_path, ai_result, is_approved):
+    """Save cleaning check result"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO cleaning_checks (employee_id, photo_path, ai_result, is_approved)
+            VALUES (?, ?, ?, ?)
+        """, (employee_id, photo_path, json.dumps(ai_result), is_approved))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Save cleaning check error: {e}")
+
+# Enhanced AI system for coffee/barista topics
+async def get_enhanced_coffee_ai_response(question, employee_context=None, user_id=None):
+    """Enhanced AI response focused on coffee/barista topics"""
+    
+    if AI_ENABLED:
+        try:
+            print("🤖 Using enhanced coffee AI...")
+            
+            lang = get_user_language(user_id) if user_id else 'uz'
+            context_lang = {
+                'uz': "O'zbek tilida",
+                'ru': "на русском языке", 
+                'en': "in English"
+            }.get(lang, "O'zbek tilida")
+            
+            context = f"""Siz professional qahvaxona/kafe uchun barista yordamchisiz. {context_lang} javob bering.
+
+Hodim ma'lumotlari:
+- Ism: {employee_context.get('name', 'Noma\'lum') if employee_context else 'Noma\'lum'}
+- Lavozim: {employee_context.get('position', 'Noma\'lum') if employee_context else 'Noma\'lum'}
+
+FAQAT quyidagi mavzularda yordam bering:
+- ☕ Kofe turlari va tayyorlash usullari (espresso, latte, cappuccino, americano, va boshqalar)
+- 🥛 Sut ishlash texnikalari (steaming, frothing, microfoam)
+- 🎨 Latte art va bezatish usullari
+- ⚙️ Espresso mashinasi va jihozlar bilan ishlash
+- 📏 Kofe nisbatlari va retseptlar
+- 🌡️ Harorat va vaqt parametrlari
+- 🫘 Kofe donlari haqida ma'lumot (origin, roast levels)
+- 🧹 Qahvaxona jihozlarini tozalash va parvarish qilish
+- 👥 Mijozlar bilan qahva buyurtmalari bo'yicha muloqot
+- 📊 Qahvaxona operatsiyalari va workflow
+
+Agar savol qahvaxona/kofe mavzusidan tashqarida bo'lsa, iltimos faqat qahva bilan bog'liq savollar berishni so'rang.
+
+Javoblaringiz:
+- Professional va amaliy bo'lsin
+- Aniq retsept va yo'riqnomalar bering
+- Emoji ishlatib do'stona bo'ling
+- 2-3 paragrafdan oshmasin"""
+            
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": context},
+                    {"role": "user", "content": question}
+                ],
+                max_tokens=600,
+                temperature=0.7
+            )
+            
+            result = response.choices[0].message.content
+            print("✅ Enhanced coffee AI response generated")
+            return result
+            
+        except Exception as e:
+            print(f"❌ OpenAI chat error: {e}")
+            print("🔄 Using demo responses...")
+    
+    # Fallback to enhanced static responses
+    return get_enhanced_static_coffee_response(question, user_id)
+
+def get_enhanced_static_coffee_response(question, user_id=None):
+    """Enhanced static responses for coffee topics"""
+    question_lower = question.lower()
+    lang = get_user_language(user_id) if user_id else 'uz'
+    
+    coffee_responses = {
+        'uz': {
+            'latte': """🥛 **LATTE PROFESSIONAL RETSEPTI**
+
+☕ **Tarkibi:**
+• 1-2 shot espresso (30-60ml)
+• 150-180ml buglangan sut
+• 1cm sut ko'pigi
+
+📋 **Professional tayyorlash:**
+1. **Espresso:** 18-20g kofe, 25-30 soniya ekstraktsiya
+2. **Sut:** 60-65°C gacha bug'lang (thermometer ishlatamiz)
+3. **Microfoam:** Glossy, paint-like texture
+4. **Quyish:** Steady stream, 3-4cm balandlikdan
+5. **Latte Art:** Heart yoki tulip pattern
+
+💡 **Pro tips:**
+• Fresh sut ishlatamiz (2-3 kun ichida)
+• Steam wand har safar tozalanadi
+• Sut ikki marta bug'lanmaydi
+• Perfect microfoam uchun: swirl + tap technique""",
+
+            'cappuccino': """☕ **CAPPUCCINO MASTERCLASS**
+
+🎯 **Classic nisbat:**
+• 1 shot espresso (30ml)
+• 60ml buglangan sut
+• 60ml sut ko'pigi (dense foam)
+
+⚡ **Tayyorlash texnikasi:**
+1. **Espresso:** Double shot, 25-30 sek
+2. **Foam creation:** Dense, velvety microfoam
+3. **Temperature:** 65-70°C (lip-burning hot)
+4. **Texture:** Thick, creamy consistency
+5. **Presentation:** Ko'pik ustiga cocoa powder
+
+🎨 **Italian style vs Modern:**
+• **Traditional:** Ko'proq foam, kam sut
+• **Modern:** Latte art bilan, microfoam focus
+• **Wet vs Dry:** Mijoz preferensiyasiga qarab""",
+
+            'espresso': """⚡ **PERFECT ESPRESSO GUIDE**
+
+📊 **Golden parameters:**
+• **Kofe:** 18-20g (double shot)
+• **Vaqt:** 25-30 soniya
+• **Hajm:** 36-40ml output
+• **Bosim:** 9 bar
+• **Harorat:** 92-96°C
+
+🔧 **Texnika:**
+1. **Grind:** Fine, hali powder emas
+2. **Dose:** Scales bilan aniq o'lchang
+3. **Distribution:** WDT yoki finger leveling
+4. **Tamping:** 15-20kg bosim, level surface
+5. **Timing:** Extraction vaqtini kuzating
+
+❌ **Xatolar va yechimlar:**
+• **Sour/Under:** Grind finer, vaqt uzaytiring
+• **Bitter/Over:** Grind coarser, vaqt qisqartiring
+• **Channeling:** Distribution yaxshilang""",
+
+            'milk_steaming': """🥛 **PROFESSIONAL MILK STEAMING**
+
+🌡️ **Temperature zones:**
+• **Start:** Room temperature (4-6°C)
+• **Finish:** 60-65°C (hand test: 3 soniya ushlab turolasiz)
+• **Limit:** 70°C dan oshmang (protein buziladi)
+
+🎯 **Steaming technique:**
+1. **Position:** Steam wand surface yaqinida
+2. **Stretching phase:** 0-5 soniya, havo qo'shamiz
+3. **Heating phase:** 5-30 soniya, chuqurroq tiqish
+4. **Texture:** Glossy, paint-like consistency
+
+💡 **Pro secrets:**
+• **Wand angle:** 15-30 daraja
+• **Jug size:** Sut hajmidan 2 barobar katta
+• **Swirling:** Steam tugagach darhol aylantiring
+• **Tap technique:** Bubbles integration uchun""",
+
+            'coffee_beans': """🫘 **KOFE DONLARI HAQIDA**
+
+🌍 **Origin characteristics:**
+• **Ethiopia:** Floral, fruity notes
+• **Colombia:** Balanced, nutty-chocolate
+• **Brazil:** Nutty, low acidity
+• **Guatemala:** Full body, spicy notes
+
+🔥 **Roast levels:**
+• **Light:** Bright, acidic, origin flavors
+• **Medium:** Balanced, caramelized notes
+• **Dark:** Bold, bitter, less origin character
+
+📅 **Freshness rules:**
+• **Optimal:** 7-21 kun roast qilinganidan keyin
+• **Grind:** Ishlatishdan 30 daqiqa oldin
+• **Storage:** Cool, dry place, airtight container
+• **Avoid:** Freezer, direct sunlight, moisture""",
+
+            'not_coffee': "❌ Kechirasiz, men faqat qahvaxona va kofe mavzularida yordam bera olaman. ☕\n\nQuyidagi mavzularda savol bering:\n• Kofe tayyorlash usullari\n• Latte art texnikalari\n• Espresso sozlamalari\n• Sut ishlash\n• Qahvaxona jihozlari\n\nQahva bilan bog'liq savolingiz bormi? 😊"
+        }
+    }
+    
+    responses = coffee_responses.get(lang, coffee_responses['uz'])
+    
+    # Check for coffee-related keywords
+    coffee_keywords = ['latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk', 'bean', 'don', 'steam', 'bug', 'art', 'foam',
