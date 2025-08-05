@@ -1,4 +1,174 @@
-#!/usr/bin/env python3
+# Photo handler remains the same but updated for regular keyboards
+@dp.message(F.photo)
+async def handle_photo(message: types.Message):
+    """Handle photo uploads with real AI"""
+    user_id = message.from_user.id
+    
+    if user_id not in waiting_for_photo:
+        await message.answer("❌ Hozir rasm kutilmayapti.")
+        return
+    
+    employee = get_employee_by_telegram(user_id)
+    if not employee:
+        await message.answer("❌ Hodim ma'lumotlari topilmadi.")
+        return
+    
+    # Get photo
+    photo = message.photo[-1]  # Highest resolution
+    
+    # Check API status and show appropriate message
+    if AI_ENABLED:
+        processing_msg = await message.answer("🤖 **Haqiqiy AI tahlil qilmoqda...**\n\n⏳ Iltimos, kuting...")
+    else:
+        processing_msg = await message.answer("🤖 **Demo AI tahlil qilmoqda...**\n\n⏳ (Haqiqiy AI uchun OPENAI_API_KEY sozlang)")
+    
+    try:
+        # Download photo
+        file_info = await bot.get_file(photo.file_id)
+        file_data = await bot.download_file(file_info.file_path)
+        photo_bytes = file_data.read()
+        
+        # AI Analysis
+        analysis_result = await analyze_bathroom_photo(photo_bytes)
+        
+        if not analysis_result:
+            await processing_msg.edit_text("❌ Tahlil xatosi! Qayta urinib ko'ring.")
+            return
+        
+        # Save results
+        photo_path = f"photos/{photo.file_id}.jpg"
+        is_approved = analysis_result['overall'] == 'approved'
+        save_cleaning_check(employee[0], photo_path, analysis_result, is_approved)
+        
+        # Format results
+        score = analysis_result.get('score', 0)
+        result_text = f"🤖 **AI Tahlil Natijasi:** {score}/100\n\n"
+        
+        # Details
+        result_text += f"{'✅' if analysis_result['toilet_paper'] else '❌'} **Tualet qogozi:** {'Bor' if analysis_result['toilet_paper'] else 'Yo\'q'}\n"
+        result_text += f"🧴 **Sovun:** {analysis_result['soap']}\n"
+        result_text += f"🚽 **Unitaz:** {analysis_result['toilet']}\n"
+        result_text += f"🪣 **Pollar:** {analysis_result['floor']}\n"
+        result_text += f"🧽 **Lavabo:** {analysis_result['sink']}\n\n"
+        
+        if is_approved:
+            result_text += f"✅ **QABUL QILINDI!** ({score}/100)\n\n"
+            result_text += f"💬 {analysis_result['notes']}\n\n🎉 Ajoyib ish!"
+        else:
+            result_text += f"❌ **RAD ETILDI!** ({score}/100)\n\n"
+            result_text += f"💬 {analysis_result['notes']}\n\n"
+            result_text += "🔄 **Iltimos, tozalab qayta rasm yuboring.**"
+        
+        # Use regular keyboard for response
+        await processing_msg.edit_text(result_text)
+        await message.answer("Davom etish uchun menyudan tanlang:", reply_markup=back_to_menu_keyboard(user_id))
+        
+    except Exception as e:
+        await processing_msg.edit_text(f"❌ Xatolik: {str(e)}")
+        await message.answer("Davom etish uchun menyudan tanlang:", reply_markup=back_to_menu_keyboard(user_id))
+    
+    finally:
+        if user_id in waiting_for_photo:
+            del waiting_for_photo[user_id]
+
+# Error handler
+@dp.error()
+async def error_handler(event, exception):
+    """Global error handler"""
+    print(f"Error occurred: {exception}")
+    return True
+
+# Health check endpoint (for Render)
+from aiohttp import web
+from aiohttp.web import Request, Response
+
+async def health_check(request: Request) -> Response:
+    return web.json_response({"status": "healthy", "bot": "running"})
+
+async def setup_webapp():
+    """Setup web app for health checks"""
+    app = web.Application()
+    app.router.add_get("/health", health_check)
+    app.router.add_get("/", health_check)
+    return app
+
+# Main function
+async def main():
+    """Main function to run the bot"""
+    try:
+        print("🚀 Starting Enhanced Horeca AI Bot with Regular Keyboards...")
+        print(f"📱 Python version: {__import__('sys').version}")
+        print(f"💾 Database: {DATABASE_PATH}")
+        print(f"🤖 AI Status: {'Real AI' if AI_ENABLED else 'Demo Mode'}")
+        print(f"🌐 Multi-language: UZ/RU/EN support")
+        print(f"👥 Role-based access: Admin vs Employee")
+        print(f"⌨️ Interface: Regular Keyboards (more user-friendly)")
+        
+        # Initialize database
+        print("📊 Initializing enhanced database...")
+        if not init_database():
+            print("❌ Database initialization failed!")
+            return
+        
+        print("✅ Database ready!")
+        print("🤖 Enhanced bot starting...")
+        print("📱 Features:")
+        print("  - Personal Cabinet for employees")
+        print("  - Enhanced Coffee AI Assistant")
+        print("  - Multi-language support (UZ/RU/EN)")
+        print("  - Role-based permissions")
+        print("  - Personal tasks and statistics")
+        print("  - Regular keyboard interface")
+        print("🎯 Admin: +998900007747")
+        print("👥 Test users: +998901234567-70")
+        print("🌐 Health check: /health")
+        print("🛑 Stop with Ctrl+C")
+        print("-" * 60)
+        
+        # Setup web app for health checks
+        app = await setup_webapp()
+        
+        # Start web server for health checks (required by Render)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        
+        print(f"🌐 Web server started on port {PORT}")
+        
+        # Start bot polling
+        await dp.start_polling(bot, skip_updates=True)
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Critical error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("🔄 Cleaning up...")
+        await bot.session.close()
+        print("👋 Goodbye!")
+
+if __name__ == "__main__":
+    # Setup logging
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Suppress some verbose logs
+    logging.getLogger('aiogram').setLevel(logging.WARNING)
+    logging.getLogger('aiohttp').setLevel(logging.WARNING)
+    
+    # Run the bot
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Bot terminated")
+    except Exception as e:
+        print(f"❌ Startup error: {e}")#!/usr/bin/env python3
 """
 Enhanced Horeca AI Bot - Role-based & Multi-language
 - Role-based access control
@@ -17,8 +187,8 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -608,54 +778,140 @@ def get_enhanced_static_coffee_response(question, user_id=None):
     responses = coffee_responses.get(lang, coffee_responses['uz'])
     return get_coffee_response(question_lower, responses)
 
-# Keyboard builders with role-based access
+# Keyboard builders with role-based access - REGULAR KEYBOARDS
 def main_menu_keyboard(user_id, is_admin_user=False):
     """Main menu keyboard with role-based access"""
-    builder = InlineKeyboardBuilder()
+    builder = ReplyKeyboardBuilder()
     
     if is_admin_user:
         # Admin sees all employees data
         builder.row(
-            InlineKeyboardButton(text=_(user_id, 'menu_employees'), callback_data="employees"),
-            InlineKeyboardButton(text=_(user_id, 'menu_cleaning'), callback_data="cleaning")
+            KeyboardButton(text=_(user_id, 'menu_employees')),
+            KeyboardButton(text=_(user_id, 'menu_cleaning'))
         )
     else:
         # Regular employees see personal cabinet
         builder.row(
-            InlineKeyboardButton(text=_(user_id, 'menu_personal'), callback_data="personal_cabinet"),
-            InlineKeyboardButton(text=_(user_id, 'menu_cleaning'), callback_data="cleaning")
+            KeyboardButton(text=_(user_id, 'menu_personal')),
+            KeyboardButton(text=_(user_id, 'menu_cleaning'))
         )
     
     builder.row(
-        InlineKeyboardButton(text=_(user_id, 'menu_reports'), callback_data="reports"),
-        InlineKeyboardButton(text=_(user_id, 'menu_ai_help'), callback_data="ai_help")
+        KeyboardButton(text=_(user_id, 'menu_reports')),
+        KeyboardButton(text=_(user_id, 'menu_ai_help'))
     )
     builder.row(
-        InlineKeyboardButton(text=_(user_id, 'menu_restaurant'), callback_data="restaurant"),
-        InlineKeyboardButton(text=_(user_id, 'menu_settings'), callback_data="settings")
+        KeyboardButton(text=_(user_id, 'menu_restaurant')),
+        KeyboardButton(text=_(user_id, 'menu_settings'))
     )
     
     if is_admin_user:
         builder.row(
-            InlineKeyboardButton(text=_(user_id, 'menu_admin'), callback_data="admin")
+            KeyboardButton(text=_(user_id, 'menu_admin'))
         )
     
-    return builder.as_markup()
+    return builder.as_markup(resize_keyboard=True)
 
 def back_to_menu_keyboard(user_id):
     """Back to main menu keyboard"""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=_(user_id, 'main_menu'), callback_data="main_menu")
-    ]])
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=_(user_id, 'main_menu')))
+    return builder.as_markup(resize_keyboard=True)
 
 def language_selection_keyboard():
     """Language selection keyboard"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇺🇿 O'zbek tili", callback_data="lang_uz")],
-        [InlineKeyboardButton(text="🇷🇺 Русский язык", callback_data="lang_ru")],
-        [InlineKeyboardButton(text="🇬🇧 English Language", callback_data="lang_en")],
-        [InlineKeyboardButton(text="🔙 Orqaga / Назад / Back", callback_data="main_menu")]
-    ])
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="🇺🇿 O'zbek tili"))
+    builder.row(KeyboardButton(text="🇷🇺 Русский язык"))
+    builder.row(KeyboardButton(text="🇬🇧 English Language"))
+    builder.row(KeyboardButton(text="🔙 Orqaga / Назад / Back"))
+    return builder.as_markup(resize_keyboard=True)
+
+def personal_cabinet_keyboard(user_id):
+    """Personal cabinet menu keyboard"""
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        KeyboardButton(text="📊 Mening Statistikam"),
+        KeyboardButton(text="📋 Mening Vazifalarim")
+    )
+    builder.row(
+        KeyboardButton(text="📅 Ish Jadvali"),
+        KeyboardButton(text="⏰ Ish Vaqti")
+    )
+    builder.row(
+        KeyboardButton(text="🏆 Reyting"),
+        KeyboardButton(text="🎯 Maqsadlar")
+    )
+    builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    return builder.as_markup(resize_keyboard=True)
+
+def ai_help_keyboard(user_id):
+    """AI help menu keyboard"""
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        KeyboardButton(text="☕ Espresso"),
+        KeyboardButton(text="🥛 Latte")
+    )
+    builder.row(
+        KeyboardButton(text="☕ Cappuccino"),
+        KeyboardButton(text="🫘 Kofe Donlari")
+    )
+    builder.row(
+        KeyboardButton(text="🥛 Sut Ishlash"),
+        KeyboardButton(text="🎨 Latte Art")
+    )
+    builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    return builder.as_markup(resize_keyboard=True)
+
+def cleaning_keyboard(user_id, is_cleaner=False):
+    """Cleaning menu keyboard"""
+    builder = ReplyKeyboardBuilder()
+    
+    if is_cleaner:
+        builder.row(KeyboardButton(text="📸 Hojatxona Tekshiruvi"))
+    
+    builder.row(
+        KeyboardButton(text="📊 Bugungi Tekshiruvlar"),
+        KeyboardButton(text="📈 Statistika")
+    )
+    builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    return builder.as_markup(resize_keyboard=True)
+
+def reports_keyboard(user_id, is_admin_user=False):
+    """Reports menu keyboard"""
+    builder = ReplyKeyboardBuilder()
+    
+    if is_admin_user:
+        builder.row(
+            KeyboardButton(text="📈 Kunlik"),
+            KeyboardButton(text="📊 Haftalik")
+        )
+        builder.row(
+            KeyboardButton(text="📅 Oylik"),
+            KeyboardButton(text="👥 Hodimlar")
+        )
+    else:
+        builder.row(
+            KeyboardButton(text="📈 Mening Hisobotim"),
+            KeyboardButton(text="📊 Jamoaviy Ko'rsatkichlar")
+        )
+    
+    builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    return builder.as_markup(resize_keyboard=True)
+
+def employees_keyboard(user_id):
+    """Employees menu keyboard (Admin only)"""
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        KeyboardButton(text="👥 Barcha Hodimlar"),
+        KeyboardButton(text="📊 Umumiy Statistika")
+    )
+    builder.row(
+        KeyboardButton(text="📋 Ish Jadvallari"),
+        KeyboardButton(text="🎯 Performance")
+    )
+    builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    return builder.as_markup(resize_keyboard=True)
 
 # Message handlers
 @dp.message(Command("start"))
@@ -710,39 +966,461 @@ async def register_phone(message: types.Message):
     else:
         await message.answer(_(user_id, 'phone_not_found'))
 
-# Enhanced AI text handler
+# Enhanced AI text handler - UPDATED for regular keyboards
 @dp.message(F.text)
 async def handle_text_message(message: types.Message):
-    """Handle text messages with enhanced coffee AI"""
+    """Handle text messages with enhanced coffee AI and menu navigation"""
     user_id = message.from_user.id
     employee = get_employee_by_telegram(user_id)
+    text = message.text.strip()
     
     if not employee:
         await message.answer("❌ Avval ro'yxatdan o'ting! /start buyrug'ini bosing.")
         return
     
     # Skip phone registration
-    if message.text.startswith('+998'):
+    if text.startswith('+998'):
         return
     
-    user_question = message.text.strip()
+    is_admin_user = is_admin(user_id)
     
-    # Show typing indicator
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    # Handle menu navigation with regular keyboards
+    if text in [_(user_id, 'menu_personal'), "🏠 Shaxsiy Kabinet"]:
+        await personal_cabinet_handler(message)
+        return
+    elif text in [_(user_id, 'menu_employees'), "👥 Hodimlar"] and is_admin_user:
+        await employees_handler(message)
+        return
+    elif text in [_(user_id, 'menu_cleaning'), "🧹 Tozalik"]:
+        await cleaning_handler(message)
+        return
+    elif text in [_(user_id, 'menu_reports'), "📊 Hisobotlar"]:
+        await reports_handler(message)
+        return
+    elif text in [_(user_id, 'menu_ai_help'), "🤖 AI Yordam"]:
+        await ai_help_handler(message)
+        return
+    elif text in [_(user_id, 'menu_restaurant'), "🏢 Restoran"]:
+        await restaurant_handler(message)
+        return
+    elif text in [_(user_id, 'menu_settings'), "⚙️ Sozlamalar"]:
+        await settings_handler(message)
+        return
+    elif text in [_(user_id, 'main_menu'), "🏠 Bosh Menyu"]:
+        await main_menu_handler(message)
+        return
     
-    # Get enhanced coffee AI response
-    employee_context = {
-        "name": employee[1],
-        "position": employee[3],
-        "id": employee[0]
+    # Handle language selection
+    elif text == "🇺🇿 O'zbek tili":
+        await language_change_handler(message, 'uz')
+        return
+    elif text == "🇷🇺 Русский язык":
+        await language_change_handler(message, 'ru')
+        return
+    elif text == "🇬🇧 English Language":
+        await language_change_handler(message, 'en')
+        return
+    
+    # Handle personal cabinet submenu
+    elif text == "📊 Mening Statistikam":
+        await my_detailed_stats_handler(message)
+        return
+    elif text == "📋 Mening Vazifalarim":
+        await my_tasks_handler(message)
+        return
+    
+    # Handle AI help topics
+    elif text in ["☕ Espresso", "🥛 Latte", "☕ Cappuccino", "🫘 Kofe Donlari", "🥛 Sut Ishlash", "🎨 Latte Art"]:
+        await ai_topic_handler(message, text)
+        return
+    
+    # Handle cleaning submenu
+    elif text == "📸 Hojatxona Tekshiruvi":
+        await bathroom_check_handler(message)
+        return
+    
+    # If not a menu item, treat as AI question
+    else:
+        # Show typing indicator
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        
+        # Get enhanced coffee AI response
+        employee_context = {
+            "name": employee[1],
+            "position": employee[3],
+            "id": employee[0]
+        }
+        
+        ai_response = await get_enhanced_coffee_ai_response(text, employee_context, user_id)
+        
+        # Save AI request
+        save_ai_request(employee[0], text, ai_response)
+        
+        await message.answer(ai_response, reply_markup=back_to_menu_keyboard(user_id))
+
+# Updated handlers for regular keyboards
+async def main_menu_handler(message: types.Message):
+    """Main menu handler"""
+    user_id = message.from_user.id
+    is_admin_user = is_admin(user_id)
+    
+    await message.answer(
+        _(user_id, 'main_menu') + "\n\nKerakli bo'limni tanlang:",
+        reply_markup=main_menu_keyboard(user_id, is_admin_user)
+    )
+
+async def personal_cabinet_handler(message: types.Message):
+    """Personal cabinet handler"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await message.answer("❌ Xatolik!")
+        return
+    
+    # Get personal statistics
+    stats = get_personal_stats(employee[0])
+    if not stats:
+        await message.answer(
+            "❌ Statistika ma'lumotlarini olishda xatolik!",
+            reply_markup=back_to_menu_keyboard(user_id)
+        )
+        return
+    
+    # Format personal cabinet info
+    success_rate = stats['success_rate']
+    rating_emoji = "🏆" if success_rate >= 95 else "🥇" if success_rate >= 85 else "🥈" if success_rate >= 70 else "📈"
+    
+    cabinet_text = f"""🏠 **Shaxsiy Kabinet - {employee[1]}**
+
+{rating_emoji} **Umumiy Ko'rsatkichlar:**
+• Muvaffaqiyat darajasi: {success_rate:.1f}%
+• Bajarilgan tekshiruvlar: {stats['approved_checks']}/{stats['total_checks']}
+• AI so'rovlari: {stats['ai_requests']} ta
+• Tugallanmagan vazifalar: {stats['pending_tasks']} ta
+
+🎯 **Lavozim:** {employee[3]}
+📅 **Faollik:** {datetime.now().strftime('%B %Y')}
+
+Quyidagi bo'limlar orqali batafsil ma'lumot olishingiz mumkin:"""
+    
+    await message.answer(
+        cabinet_text,
+        reply_markup=personal_cabinet_keyboard(user_id)
+    )
+
+async def my_tasks_handler(message: types.Message):
+    """My tasks handler"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await message.answer("❌ Xatolik!")
+        return
+    
+    tasks = get_personal_tasks(employee[0])
+    
+    if not tasks:
+        tasks_text = f"""📋 **{employee[1]} - Shaxsiy Vazifalar**
+
+✅ **Barcha vazifalar bajarilgan!**
+
+Yangi vazifalar tez orada qo'shiladi."""
+    else:
+        tasks_text = f"""📋 **{employee[1]} - Shaxsiy Vazifalar**
+
+"""
+        
+        for i, (title, description, is_completed, due_date) in enumerate(tasks, 1):
+            status_emoji = "✅" if is_completed else "⏳"
+            due_str = ""
+            if due_date:
+                due_parsed = datetime.strptime(due_date, '%Y-%m-%d %H:%M:%S')
+                if due_parsed.date() == datetime.now().date():
+                    due_str = " (Bugun)"
+                elif due_parsed.date() < datetime.now().date():
+                    due_str = " (Muddati o'tgan)"
+                else:
+                    due_str = f" ({due_parsed.strftime('%d.%m')})"
+            
+            tasks_text += f"""{status_emoji} **{i}. {title}**{due_str}
+{description}
+
+"""
+    
+    await message.answer(tasks_text, reply_markup=back_to_menu_keyboard(user_id))
+
+async def my_detailed_stats_handler(message: types.Message):
+    """Detailed stats handler"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee:
+        await message.answer("❌ Xatolik!")
+        return
+    
+    stats = get_personal_stats(employee[0])
+    if not stats:
+        await message.answer(
+            "❌ Statistika ma'lumotlarini olishda xatolik!",
+            reply_markup=back_to_menu_keyboard(user_id)
+        )
+        return
+    
+    current_month = datetime.now().strftime('%B %Y')
+    
+    stats_text = _(user_id, 'personal_stats',
+                   name=employee[1],
+                   total_checks=stats['total_checks'],
+                   approved_checks=stats['approved_checks'],
+                   success_rate=stats['success_rate'],
+                   ai_requests=stats['ai_requests'],
+                   position=employee[3],
+                   current_month=current_month)
+    
+    # Add performance evaluation
+    success_rate = stats['success_rate']
+    if success_rate >= 95:
+        stats_text += "\n\n🏆 **A'LO NATIJA!** Siz eng yaxshi hodimlardan birisiz!"
+    elif success_rate >= 85:
+        stats_text += "\n\n👍 **YAXSHI NATIJA!** Davom etishda!"
+    elif success_rate >= 70:
+        stats_text += "\n\n📈 **O'RTACHA NATIJA.** Yaxshilash mumkin."
+    else:
+        stats_text += "\n\n📝 **DIQQAT TALAB.** Ko'proq e'tibor qarating."
+    
+    await message.answer(stats_text, reply_markup=back_to_menu_keyboard(user_id))
+
+async def settings_handler(message: types.Message):
+    """Settings handler"""
+    user_id = message.from_user.id
+    current_lang = get_user_language(user_id)
+    
+    lang_names = {
+        'uz': "O'zbek tili 🇺🇿",
+        'ru': "Русский язык 🇷🇺",
+        'en': "English Language 🇬🇧"
     }
     
-    ai_response = await get_enhanced_coffee_ai_response(user_question, employee_context, user_id)
+    settings_text = f"""⚙️ **Sozlamalar**
+
+🌐 **Joriy til:** {lang_names.get(current_lang, 'O\'zbek tili 🇺🇿')}
+
+Tilni o'zgartirish uchun quyidagi tugmalardan birini tanlang:"""
     
-    # Save AI request
-    save_ai_request(employee[0], user_question, ai_response)
+    await message.answer(
+        settings_text,
+        reply_markup=language_selection_keyboard()
+    )
+
+async def language_change_handler(message: types.Message, new_lang: str):
+    """Language change handler"""
+    user_id = message.from_user.id
     
-    await message.answer(ai_response, reply_markup=back_to_menu_keyboard(user_id))
+    # Update user language
+    set_user_language(user_id, new_lang)
+    
+    # Update in database
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE employees 
+            SET language = ? 
+            WHERE telegram_id = ?
+        """, (new_lang, user_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Language update error: {e}")
+    
+    success_messages = {
+        'uz': "✅ Til muvaffaqiyatli o'zgartirildi - O'zbek tili",
+        'ru': "✅ Язык успешно изменен - Русский язык",
+        'en': "✅ Language successfully changed - English"
+    }
+    
+    await message.answer(
+        success_messages.get(new_lang, success_messages['uz']),
+        reply_markup=back_to_menu_keyboard(user_id)
+    )
+
+async def ai_help_handler(message: types.Message):
+    """AI help handler"""
+    user_id = message.from_user.id
+    
+    help_text = {
+        'uz': """🤖 **Qahvaxona AI Yordamchi**
+
+Men sizga qahvaxona va kofe tayyorlash bo'yicha professional yordam bera olaman!
+
+💡 **Misol savollar:**
+• "Latteni yanada mazali qanday qilish mumkin?"
+• "Espresso chiqarish vaqti nima uchun muhim?"
+• "Sut mikrofoam qanday yaratiladi?"
+• "Qaysi kofe donlari cappuccino uchun yaxshi?"
+
+✨ Savolingizni yozing yoki quyidagi mavzulardan birini tanlang:""",
+        'ru': """🤖 **Помощник AI для кофейни**
+
+Я могу предоставить профессиональную помощь по кофейне и приготовлению кофе!
+
+💡 **Примеры вопросов:**
+• "Как сделать латте еще вкуснее?"
+• "Почему важно время экстракции эспрессо?"
+• "Как создать микропену молока?"
+• "Какие зерна лучше для капучино?"
+
+✨ Напишите ваш вопрос или выберите тему ниже:""",
+        'en': """🤖 **Coffee Shop AI Assistant**
+
+I can provide professional help with coffee shop operations and coffee preparation!
+
+💡 **Example questions:**
+• "How to make latte even more delicious?"
+• "Why is espresso extraction time important?"
+• "How to create milk microfoam?"
+• "Which beans are best for cappuccino?"
+
+✨ Write your question or choose a topic below:"""
+    }
+    
+    lang = get_user_language(user_id)
+    text = help_text.get(lang, help_text['uz'])
+    
+    await message.answer(text, reply_markup=ai_help_keyboard(user_id))
+
+async def ai_topic_handler(message: types.Message, topic_text: str):
+    """AI topic handler"""
+    user_id = message.from_user.id
+    
+    # Map button text to topics
+    topic_map = {
+        "☕ Espresso": 'espresso tayyorlash',
+        "🥛 Latte": 'latte retsepti',
+        "☕ Cappuccino": 'cappuccino qanday tayyorlanadi',
+        "🫘 Kofe Donlari": 'kofe donlari haqida',
+        "🥛 Sut Ishlash": 'sut steaming texnikasi',
+        "🎨 Latte Art": 'latte art qanday qilinadi'
+    }
+    
+    question = topic_map.get(topic_text, 'kofe tayyorlash')
+    content = get_enhanced_static_coffee_response(question, user_id)
+    
+    await message.answer(content, reply_markup=back_to_menu_keyboard(user_id))
+
+async def employees_handler(message: types.Message):
+    """Employees handler (Admin only)"""
+    user_id = message.from_user.id
+    
+    if not is_admin(user_id):
+        await message.answer("❌ Faqat adminlar uchun!")
+        return
+    
+    await message.answer(
+        "👥 **Hodimlar Boshqaruvi** (Admin)\n\nBarcha hodimlar ma'lumotlari va statistikasi:",
+        reply_markup=employees_keyboard(user_id)
+    )
+
+async def cleaning_handler(message: types.Message):
+    """Cleaning handler"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    is_cleaner = employee and 'tozalovchi' in employee[3].lower()
+    
+    await message.answer(
+        "🧹 **Tozalik Nazorati**\n\nTozalik tekshiruvlari va statistikalar:",
+        reply_markup=cleaning_keyboard(user_id, is_cleaner)
+    )
+
+async def bathroom_check_handler(message: types.Message):
+    """Bathroom check handler"""
+    user_id = message.from_user.id
+    employee = get_employee_by_telegram(user_id)
+    
+    if not employee or 'tozalovchi' not in employee[3].lower():
+        await message.answer(
+            "❌ **Ruxsat yo'q!**\n\nFaqat tozalovchilar hojatxona tekshiruvi qila oladi.",
+            reply_markup=back_to_menu_keyboard(user_id)
+        )
+        return
+    
+    await message.answer(
+        """📸 **Hojatxona Tekshiruvi**
+
+Hojatxonaning umumiy holatini ko'rsatadigan **aniq rasm** yuboring.
+
+🔍 **Tekshiriladigan narsalar:**
+• ✅ Tualet qogozi mavjudligi
+• 🧴 Suyuq sovun holati
+• 🚽 Unitaz tozaligi
+• 🪣 Pollar holati (quruq/nam)
+• 🧽 Lavabo va peshtaxtalar
+
+⏰ **Vaqt:** 40 daqiqa (10 daqiqa bonus)
+
+📱 Rasmni yuborganingizdan so'ng AI tahlil qiladi.""",
+        reply_markup=back_to_menu_keyboard(user_id)
+    )
+    
+    waiting_for_photo[user_id] = "bathroom_check"
+
+async def reports_handler(message: types.Message):
+    """Reports handler"""
+    user_id = message.from_user.id
+    is_admin_user = is_admin(user_id)
+    
+    report_text = "📊 **Hisobotlar Bo'limi**\n\n" + (
+        "Admin sifatida barcha hisobotlarni ko'rishingiz mumkin:" if is_admin_user
+        else "Shaxsiy va jamoaviy ko'rsatkichlaringizni ko'ring:"
+    )
+    
+    await message.answer(report_text, reply_markup=reports_keyboard(user_id, is_admin_user))
+
+async def restaurant_handler(message: types.Message):
+    """Restaurant handler"""
+    user_id = message.from_user.id
+    
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'name'")
+        name = cursor.fetchone()
+        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'description'")
+        description = cursor.fetchone()
+        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'working_hours'")
+        hours = cursor.fetchone()
+        cursor.execute("SELECT info_value FROM restaurant_info WHERE info_key = 'contact'")
+        contact = cursor.fetchone()
+        
+        conn.close()
+        
+        restaurant_text = f"""🏢 **{name[0] if name else 'Demo Restoran'}**
+
+📝 **Tavsif:**
+{description[0] if description else 'Ma\'lumot kiritilmagan'}
+
+🕐 **Ish vaqti:**
+{hours[0] if hours else '09:00 - 23:00'}
+
+📞 **Aloqa:**
+{contact[0] if contact else '+998900007747'}
+
+🎯 **Bizning maqsad:**
+Mijozlarimizga eng yaxshi xizmat va sifatli taom taqdim etish
+
+✨ **Qadriyatlarimiz:**
+• Sifat
+• Xizmat
+• Jamoavilik
+• Rivojlanish"""
+        
+    except Exception as e:
+        restaurant_text = f"🏢 **Restoran Haqida**\n\n❌ Ma'lumotlarni olishda xatolik: {str(e)}"
+    
+    await message.answer(restaurant_text, reply_markup=back_to_menu_keyboard(user_id))
 
 # Callback query handlers
 @dp.callback_query(F.data == "main_menu")
