@@ -1,13 +1,21 @@
-coffee_keywords = ['latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk', 'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind', 'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta', 'origin', 'blend', 'pour', 'tamping', 'dosing']
-    
-# Check if question is coffee-related
-is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
-    
-if not is_coffee_related:
+def get_coffee_response(question_lower, responses):
+    coffee_keywords = [
+        'latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk',
+        'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind',
+        'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta',
+        'origin', 'blend', 'pour', 'tamping', 'dosing'
+    ]
+
+    is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
+    if not is_coffee_related:
         return responses['not_coffee']
-    
-# Find specific coffee topic
-for keyword, response in responses.items():
+
+    for keyword, response in responses.items():
+        if keyword in question_lower and keyword != 'not_coffee':
+            return response
+
+    return responses.get('espresso', responses['not_coffee'])
+
     if keyword in question_lower and keyword != 'not_coffee':
         return response
     
