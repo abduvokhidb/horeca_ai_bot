@@ -1,4 +1,279 @@
-# Photo handler remains the same but updated for regular keyboards
+# Updated keyboard functions to use current language
+def main_menu_keyboard(user_id, is_admin_user=False):
+    """Main menu keyboard with role-based access"""
+    builder = ReplyKeyboardBuilder()
+    
+    if is_admin_user:
+        # Admin sees all employees data
+        builder.row(
+            KeyboardButton(text=get_menu_text(user_id, 'menu_employees')),
+            KeyboardButton(text=get_menu_text(user_id, 'menu_cleaning'))
+        )
+    else:
+        # Regular employees see personal cabinet
+        builder.row(
+            KeyboardButton(text=get_menu_text(user_id, 'menu_personal')),
+            KeyboardButton(text=get_menu_text(user_id, 'menu_cleaning'))
+        )
+    
+    builder.row(
+        KeyboardButton(text=get_menu_text(user_id, 'menu_reports')),
+        KeyboardButton(text=get_menu_text(user_id, 'menu_ai_help'))
+    )
+    builder.row(
+        KeyboardButton(text=get_menu_text(user_id, 'menu_restaurant')),
+        KeyboardButton(text=get_menu_text(user_id, 'menu_settings'))
+    )
+    
+    if is_admin_user:
+        builder.row(
+            KeyboardButton(text=get_menu_text(user_id, 'menu_admin'))
+        )
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def back_to_menu_keyboard(user_id):
+    """Back to main menu keyboard"""
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text=get_menu_text(user_id, 'main_menu')))
+    return builder.as_markup(resize_keyboard=True)
+
+def language_selection_keyboard():
+    """Language selection keyboard"""
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="🇺🇿 O'zbek tili"))
+    builder.row(KeyboardButton(text="🇷🇺 Русский язык"))
+    builder.row(KeyboardButton(text="🇬🇧 English Language"))
+    builder.row(KeyboardButton(text="🔙 Orqaga / Назад / Back"))
+    return builder.as_markup(resize_keyboard=True)
+
+def personal_cabinet_keyboard(user_id):
+    """Personal cabinet menu keyboard"""
+    lang = get_user_language(user_id)
+    
+    if lang == 'ru':
+        builder = ReplyKeyboardBuilder()
+        builder.row(
+            KeyboardButton(text="📊 Моя Статистика"),
+            KeyboardButton(text="📋 Мои Задачи")
+        )
+        builder.row(
+            KeyboardButton(text="📅 Рабочее Расписание"),
+            KeyboardButton(text="⏰ Рабочее Время")
+        )
+        builder.row(
+            KeyboardButton(text="🏆 Рейтинг"),
+            KeyboardButton(text="🎯 Цели")
+        )
+        builder.row(KeyboardButton(text="🏠 Главное Меню"))
+    elif lang == 'en':
+        builder = ReplyKeyboardBuilder()
+        builder.row(
+            KeyboardButton(text="📊 My Statistics"),
+            KeyboardButton(text="📋 My Tasks")
+        )
+        builder.row(
+            KeyboardButton(text="📅 Work Schedule"),
+            KeyboardButton(text="⏰ Work Time")
+        )
+        builder.row(
+            KeyboardButton(text="🏆 Rating"),
+            KeyboardButton(text="🎯 Goals")
+        )
+        builder.row(KeyboardButton(text="🏠 Main Menu"))
+    else:  # uz
+        builder = ReplyKeyboardBuilder()
+        builder.row(
+            KeyboardButton(text="📊 Mening Statistikam"),
+            KeyboardButton(text="📋 Mening Vazifalarim")
+        )
+        builder.row(
+            KeyboardButton(text="📅 Ish Jadvali"),
+            KeyboardButton(text="⏰ Ish Vaqti")
+        )
+        builder.row(
+            KeyboardButton(text="🏆 Reyting"),
+            KeyboardButton(text="🎯 Maqsadlar")
+        )
+        builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def ai_help_keyboard(user_id):
+    """AI help menu keyboard"""
+    lang = get_user_language(user_id)
+    builder = ReplyKeyboardBuilder()
+    
+    if lang == 'ru':
+        builder.row(
+            KeyboardButton(text="☕ Эспрессо"),
+            KeyboardButton(text="🥛 Латте")
+        )
+        builder.row(
+            KeyboardButton(text="☕ Капучино"),
+            KeyboardButton(text="🫘 Кофейные Зерна")
+        )
+        builder.row(
+            KeyboardButton(text="🥛 Взбивание Молока"),
+            KeyboardButton(text="🎨 Латте Арт")
+        )
+        builder.row(KeyboardButton(text="🏠 Главное Меню"))
+    elif lang == 'en':
+        builder.row(
+            KeyboardButton(text="☕ Espresso"),
+            KeyboardButton(text="🥛 Latte")
+        )
+        builder.row(
+            KeyboardButton(text="☕ Cappuccino"),
+            KeyboardButton(text="🫘 Coffee Beans")
+        )
+        builder.row(
+            KeyboardButton(text="🥛 Milk Steaming"),
+            KeyboardButton(text="🎨 Latte Art")
+        )
+        builder.row(KeyboardButton(text="🏠 Main Menu"))
+    else:  # uz
+        builder.row(
+            KeyboardButton(text="☕ Espresso"),
+            KeyboardButton(text="🥛 Latte")
+        )
+        builder.row(
+            KeyboardButton(text="☕ Cappuccino"),
+            KeyboardButton(text="🫘 Kofe Donlari")
+        )
+        builder.row(
+            KeyboardButton(text="🥛 Sut Ishlash"),
+            KeyboardButton(text="🎨 Latte Art")
+        )
+        builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def cleaning_keyboard(user_id, is_cleaner=False):
+    """Cleaning menu keyboard"""
+    lang = get_user_language(user_id) 
+    builder = ReplyKeyboardBuilder()
+    
+    if lang == 'ru':
+        if is_cleaner:
+            builder.row(KeyboardButton(text="📸 Проверка Туалета"))
+        builder.row(
+            KeyboardButton(text="📊 Сегодняшние Проверки"),
+            KeyboardButton(text="📈 Статистика")
+        )
+        builder.row(KeyboardButton(text="🏠 Главное Меню"))
+    elif lang == 'en':
+        if is_cleaner:
+            builder.row(KeyboardButton(text="📸 Bathroom Check"))
+        builder.row(
+            KeyboardButton(text="📊 Today's Checks"),
+            KeyboardButton(text="📈 Statistics")
+        )
+        builder.row(KeyboardButton(text="🏠 Main Menu"))
+    else:  # uz
+        if is_cleaner:
+            builder.row(KeyboardButton(text="📸 Hojatxona Tekshiruvi"))
+        builder.row(
+            KeyboardButton(text="📊 Bugungi Tekshiruvlar"),
+            KeyboardButton(text="📈 Statistika")
+        )
+        builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def reports_keyboard(user_id, is_admin_user=False):
+    """Reports menu keyboard"""
+    lang = get_user_language(user_id)
+    builder = ReplyKeyboardBuilder()
+    
+    if lang == 'ru':
+        if is_admin_user:
+            builder.row(
+                KeyboardButton(text="📈 Дневной"),
+                KeyboardButton(text="📊 Недельный")
+            )
+            builder.row(
+                KeyboardButton(text="📅 Месячный"),
+                KeyboardButton(text="👥 Сотрудники")
+            )
+        else:
+            builder.row(
+                KeyboardButton(text="📈 Мой Отчет"),
+                KeyboardButton(text="📊 Командные Показатели")
+            )
+        builder.row(KeyboardButton(text="🏠 Главное Меню"))
+    elif lang == 'en':
+        if is_admin_user:
+            builder.row(
+                KeyboardButton(text="📈 Daily"),
+                KeyboardButton(text="📊 Weekly")
+            )
+            builder.row(
+                KeyboardButton(text="📅 Monthly"),
+                KeyboardButton(text="👥 Employees")
+            )
+        else:
+            builder.row(
+                KeyboardButton(text="📈 My Report"),
+                KeyboardButton(text="📊 Team Overview")
+            )
+        builder.row(KeyboardButton(text="🏠 Main Menu"))
+    else:  # uz
+        if is_admin_user:
+            builder.row(
+                KeyboardButton(text="📈 Kunlik"),
+                KeyboardButton(text="📊 Haftalik")
+            )
+            builder.row(
+                KeyboardButton(text="📅 Oylik"),
+                KeyboardButton(text="👥 Hodimlar")
+            )
+        else:
+            builder.row(
+                KeyboardButton(text="📈 Mening Hisobotim"),
+                KeyboardButton(text="📊 Jamoaviy Ko'rsatkichlar")
+            )
+        builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+def employees_keyboard(user_id):
+    """Employees menu keyboard (Admin only)"""
+    lang = get_user_language(user_id)
+    builder = ReplyKeyboardBuilder()
+    
+    if lang == 'ru':
+        builder.row(
+            KeyboardButton(text="👥 Все Сотрудники"),
+            KeyboardButton(text="📊 Общая Статистика")
+        )
+        builder.row(
+            KeyboardButton(text="📋 Рабочие Графики"),
+            KeyboardButton(text="🎯 Производительность")
+        )
+        builder.row(KeyboardButton(text="🏠 Главное Меню"))
+    elif lang == 'en':
+        builder.row(
+            KeyboardButton(text="👥 All Employees"),
+            KeyboardButton(text="📊 General Statistics")
+        )
+        builder.row(
+            KeyboardButton(text="📋 Work Schedules"),
+            KeyboardButton(text="🎯 Performance")
+        )
+        builder.row(KeyboardButton(text="🏠 Main Menu"))
+    else:  # uz
+        builder.row(
+            KeyboardButton(text="👥 Barcha Hodimlar"),
+            KeyboardButton(text="📊 Umumiy Statistika")
+        )
+        builder.row(
+            KeyboardButton(text="📋 Ish Jadvallari"),
+            KeyboardButton(text="🎯 Performance")
+        )
+        builder.row(KeyboardButton(text="🏠 Bosh Menyu"))
+    
+    return builder.as_markup(resize_keyboard=True)# Photo handler remains the same but updated for regular keyboards
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     """Handle photo uploads with real AI"""
@@ -604,46 +879,65 @@ def save_cleaning_check(employee_id, photo_path, ai_result, is_approved):
     except Exception as e:
         print(f"Save cleaning check error: {e}")
 
-# Enhanced AI system for coffee/barista topics
+# Update all menu text functions to be language-aware
+def get_menu_text(user_id, key, **kwargs):
+    """Get menu text in user's language"""
+    return _(user_id, key, **kwargs)
+
+# Enhanced AI system for coffee/barista topics - IMPROVED
 async def get_enhanced_coffee_ai_response(question, employee_context=None, user_id=None):
-    """Enhanced AI response focused on coffee/barista topics"""
+    """Enhanced AI response focused on coffee/barista topics - ALWAYS tries real AI first"""
     
-    if AI_ENABLED:
-        try:
-            print("🤖 Using enhanced coffee AI...")
+    # ALWAYS try real AI first, even if API key might be missing
+    try:
+        if OPENAI_API_KEY:  # Check if key exists, even if not properly formatted
+            print("🤖 Attempting real AI response...")
             
             lang = get_user_language(user_id) if user_id else 'uz'
             context_lang = {
                 'uz': "O'zbek tilida",
-                'ru': "на русском языке",
+                'ru': "на русском языке", 
                 'en': "in English"
-            }.get(lang, "O'zbek tilida")
+            }.get(lang, "O'zbek tilinda")
             
+            # Enhanced context for more dynamic responses
             context = f"""Siz professional qahvaxona/kafe uchun barista yordamchisiz. {context_lang} javob bering.
 
 Hodim ma'lumotlari:
 - Ism: {employee_context.get('name', 'Noma\'lum') if employee_context else 'Noma\'lum'}
 - Lavozim: {employee_context.get('position', 'Noma\'lum') if employee_context else 'Noma\'lum'}
 
+Savol: "{question}"
+
+MUHIM QOIDALAR:
+1. Har bir savolga INDIVIDUAL va UNIQUE javob bering
+2. Savolning mohiyatini tushunib, to'g'ridan-to'g'ri javob bering
+3. Shablon javoblardan qoching, har safar yangi yondashuv ishlating
+4. Agar savol umumiy bo'lsa (masalan "kofe haqida gapirib be"), keng qamrovli ma'lumot bering
+5. Agar savol aniq bo'lsa, aniq javob bering
+
 FAQAT quyidagi mavzularda yordam bering:
-- ☕ Kofe turlari va tayyorlash usullari (espresso, latte, cappuccino, americano, va boshqalar)
-- 🥛 Sut ishlash texnikalari (steaming, frothing, microfoam)
+- ☕ Kofe turlari va tayyorlash usullari 
+- 🥛 Sut ishlash texnikalari
 - 🎨 Latte art va bezatish usullari
-- ⚙️ Espresso mashinasi va jihozlar bilan ishlash
+- ⚙️ Espresso mashinasi va jihozlar
 - 📏 Kofe nisbatlari va retseptlar
 - 🌡️ Harorat va vaqt parametrlari
-- 🫘 Kofe donlari haqida ma'lumot (origin, roast levels)
-- 🧹 Qahvaxona jihozlarini tozalash va parvarish qilish
-- 👥 Mijozlar bilan qahva buyurtmalari bo'yicha muloqot
-- 📊 Qahvaxona operatsiyalari va workflow
-
-Agar savol qahvaxona/kofe mavzusidan tashqarida bo'lsa, iltimos faqat qahva bilan bog'liq savollar berishni so'rang.
+- 🫘 Kofe donlari haqida ma'lumot
+- 🧹 Qahvaxona jihozlarini tozalash
+- 👥 Mijozlar bilan muloqot
+- 📊 Qahvaxona operatsiyalari
 
 Javoblaringiz:
-- Professional va amaliy bo'lsin
-- Aniq retsept va yo'riqnomalar bering
+- Savolga mos va individual bo'lsin
+- Professional va amaliy bo'lsin  
 - Emoji ishlatib do'stona bo'ling
-- 2-3 paragrafdan oshmasin"""
+- 2-4 paragraf uzunlikda bo'lsin
+- Har gal BOSHQACHA yondashuv ishlating"""
+            
+            # Try to import and use OpenAI
+            import openai
+            openai.api_key = OPENAI_API_KEY
             
             response = await openai.ChatCompletion.acreate(
                 model="gpt-4",
@@ -651,23 +945,25 @@ Javoblaringiz:
                     {"role": "system", "content": context},
                     {"role": "user", "content": question}
                 ],
-                max_tokens=600,
-                temperature=0.7
+                max_tokens=700,
+                temperature=0.8,  # Higher temperature for more varied responses
+                presence_penalty=0.3,  # Encourage new topics
+                frequency_penalty=0.3   # Reduce repetition
             )
             
             result = response.choices[0].message.content
-            print("✅ Enhanced coffee AI response generated")
+            print("✅ Real AI response generated successfully!")
             return result
             
-        except Exception as e:
-            print(f"❌ OpenAI chat error: {e}")
-            print("🔄 Using demo responses...")
+    except Exception as e:
+        print(f"❌ Real AI failed: {e}")
+        print("🔄 Using enhanced static responses...")
     
-    # Fallback to enhanced static responses
+    # Enhanced fallback with better logic
     return get_enhanced_static_coffee_response(question, user_id)
 
 def get_enhanced_static_coffee_response(question, user_id=None):
-    """Enhanced static responses for coffee topics"""
+    """Enhanced static responses for coffee topics with dynamic matching"""
     question_lower = question.lower()
     lang = get_user_language(user_id) if user_id else 'uz'
     
@@ -771,12 +1067,164 @@ def get_enhanced_static_coffee_response(question, user_id=None):
 • **Storage:** Cool, dry place, airtight container
 • **Avoid:** Freezer, direct sunlight, moisture""",
 
+            'general_coffee': """☕ **KOFE TAYYORLASH ASOSLARI**
+
+🎯 **Eng muhim faktorlar:**
+1. **Sifatli don:** Fresh roasted (2-4 hafta ichida)
+2. **To'g'ri tortish:** Har ichimlik uchun o'z usuli
+3. **Suv sifati:** Toza, mineral balansli suv
+4. **Harorat nazorati:** Har bosqichda aniq harorat
+5. **Vaqt nazorati:** Ekstraktsiya vaqtini kuzatish
+
+💡 **Professional maslahatlar:**
+• Kofe donlarini sovuq, quruq joyda saqlang
+• Har kuni dozani aniq o'lchang (scales ishlatamiz)
+• Jihozlarni muntazam tozalang
+• Har xil kofe turlari bilan tajriba o'tkazing
+• Mijozlar ta'mini o'rganing va eslab qoling
+
+🏆 **Muvaffaqiyat kaliti:** Izchillik va amaliyot!""",
+
+            'coffee_quality': """🌟 **SIFATLI KOFE TAYYORLASH**
+
+🔍 **Sifat mezonlari:**
+• **Ta'm balansi:** Achchiq, nordon, shirin uyg'unlik
+• **Aroma:** Boy va jozibali hid
+• **Tuzilish:** Smooth, creamy texture
+• **Aftertas te:** Yoqimli ta'm qoldiq
+
+⚙️ **Sifatni ta'minlash:**
+1. **Toza jihozlar:** Har kuni tozalash
+2. **Fresh ingredients:** Yangi kofe va sut
+3. **Consistent technique:** Bir xil usul
+4. **Tasting notes:** Ta'mini tahlil qilish
+5. **Customer feedback:** Mijoz fikri
+
+📈 **Sifatni oshirish yo'llari:**
+• Turli kofe navlarini sinash
+• Barista kurslarga borish  
+• Yangi texnikalarni o'rganish
+• Hamkasblar bilan tajriba almashish""",
+
             'not_coffee': "❌ Kechirasiz, men faqat qahvaxona va kofe mavzularida yordam bera olaman. ☕\n\nQuyidagi mavzularda savol bering:\n• Kofe tayyorlash usullari\n• Latte art texnikalari\n• Espresso sozlamalari\n• Sut ishlash\n• Qahvaxona jihozlari\n\nQahva bilan bog'liq savolingiz bormi? 😊"
+        },
+        'ru': {
+            'latte': """🥛 **ПРОФЕССИОНАЛЬНЫЙ РЕЦЕПТ ЛАТТЕ**
+
+☕ **Состав:**
+• 1-2 шота эспрессо (30-60мл)
+• 150-180мл взбитое молоко
+• 1см молочная пена
+
+📋 **Профессиональное приготовление:**
+1. **Эспрессо:** 18-20г кофе, 25-30 сек экстракция
+2. **Молоко:** Взбиваем до 60-65°C (используем термометр)
+3. **Микропена:** Глянцевая, краскообразная текстура
+4. **Вливание:** Равномерная струя, с высоты 3-4см
+5. **Латте-арт:** Сердце или тюльпан
+
+💡 **Профессиональные советы:**
+• Используем свежее молоко (2-3 дня)
+• Очищаем паровую трубку после каждого использования
+• Молоко не взбиваем дважды
+• Для идеальной микропены: техника swirl + tap""",
+
+            'cappuccino': """☕ **МАСТЕР-КЛАСС КАПУЧИНО**
+
+🎯 **Классические пропорции:**
+• 1 шот эспрессо (30мл)
+• 60мл взбитое молоко
+• 60мл молочная пена (плотная)
+
+⚡ **Техника приготовления:**
+1. **Эспрессо:** Двойной шот, 25-30 сек
+2. **Создание пены:** Плотная, бархатистая микропена
+3. **Температура:** 65-70°C (горячая для губ)
+4. **Текстура:** Густая, кремовая консистенция
+5. **Подача:** Какао-порошок на пену
+
+🎨 **Итальянский vs Современный стиль:**
+• **Традиционный:** Больше пены, меньше молока
+• **Современный:** С латте-артом, фокус на микропену
+• **Wet vs Dry:** По предпочтениям клиента""",
+
+            'espresso': """⚡ **РУКОВОДСТВО ПО ИДЕАЛЬНОМУ ЭСПРЕССО**
+
+📊 **Золотые параметры:**
+• **Кофе:** 18-20г (двойной шот)
+• **Время:** 25-30 секунд
+• **Объем:** 36-40мл на выходе
+• **Давление:** 9 бар
+• **Температура:** 92-96°C
+
+🔧 **Техника:**
+1. **Помол:** Мелкий, но не порошок
+2. **Дозировка:** Точно взвешиваем на весах
+3. **Распределение:** WDT или finger leveling
+4. **Темпинг:** Давление 15-20кг, ровная поверхность
+5. **Тайминг:** Следим за временем экстракции
+
+❌ **Ошибки и решения:**
+• **Кислый/Недо:** Мельче помол, увеличить время
+• **Горький/Пере:** Крупнее помол, уменьшить время
+• **Каналинг:** Улучшить распределение""",
+
+            'not_coffee': "❌ Извините, я могу помочь только по темам кофейни и кофе. ☕\n\nЗадавайте вопросы по темам:\n• Способы приготовления кофе\n• Техники латте-арт\n• Настройки эспрессо\n• Работа с молоком\n• Оборудование кофейни\n\nЕсть вопросы по кофе? 😊"
+        },
+        'en': {
+            'latte': """🥛 **PROFESSIONAL LATTE RECIPE**
+
+☕ **Components:**
+• 1-2 shots espresso (30-60ml)
+• 150-180ml steamed milk
+• 1cm milk foam
+
+📋 **Professional preparation:**
+1. **Espresso:** 18-20g coffee, 25-30 sec extraction
+2. **Milk:** Steam to 60-65°C (use thermometer)
+3. **Microfoam:** Glossy, paint-like texture
+4. **Pouring:** Steady stream, 3-4cm height
+5. **Latte Art:** Heart or tulip pattern
+
+💡 **Pro tips:**
+• Use fresh milk (2-3 days old)
+• Clean steam wand after each use
+• Never steam milk twice
+• Perfect microfoam technique: swirl + tap""",
+
+            'not_coffee': "❌ Sorry, I can only help with coffee shop and coffee topics. ☕\n\nAsk questions about:\n• Coffee brewing methods\n• Latte art techniques\n• Espresso settings\n• Milk steaming\n• Coffee shop equipment\n\nAny coffee-related questions? 😊"
         }
     }
     
     responses = coffee_responses.get(lang, coffee_responses['uz'])
-    return get_coffee_response(question_lower, responses)
+    
+    # DYNAMIC QUESTION MATCHING - more intelligent than before
+    # Check for specific keywords and topics
+    if any(word in question_lower for word in ['latte', 'латте']):
+        return responses.get('latte', responses['general_coffee'])
+    elif any(word in question_lower for word in ['cappuccino', 'капучино']):
+        return responses.get('cappuccino', responses['general_coffee'])
+    elif any(word in question_lower for word in ['espresso', 'эспрессо']):
+        return responses.get('espresso', responses['general_coffee'])
+    elif any(word in question_lower for word in ['sut', 'milk', 'молоко', 'steam', 'bug']):
+        return responses.get('milk_steaming', responses['general_coffee'])
+    elif any(word in question_lower for word in ['don', 'bean', 'зерно', 'beans']):
+        return responses.get('coffee_beans', responses['general_coffee'])
+    elif any(word in question_lower for word in ['art', 'арт', 'bezash', 'украшение']):
+        return responses.get('milk_steaming', responses['general_coffee'])
+    
+    # General coffee questions
+    elif any(word in question_lower for word in ['kofe', 'coffee', 'кофе', 'tayyorlash', 'приготовление', 'brewing', 'qanday', 'как', 'how']):
+        return responses.get('general_coffee', responses['espresso'])
+    elif any(word in question_lower for word in ['sifat', 'quality', 'качество', 'yaxshi', 'хороший', 'good', 'mazali', 'вкусный', 'tasty']):
+        return responses.get('coffee_quality', responses['general_coffee'])
+    
+    # If no coffee keywords found
+    elif not any(keyword in question_lower for keyword in coffee_keywords):
+        return responses['not_coffee']
+    
+    # Default fallback
+    return responses.get('general_coffee', responses['espresso'])
 
 # Keyboard builders with role-based access - REGULAR KEYBOARDS
 def main_menu_keyboard(user_id, is_admin_user=False):
@@ -966,7 +1414,7 @@ async def register_phone(message: types.Message):
     else:
         await message.answer(_(user_id, 'phone_not_found'))
 
-# Enhanced AI text handler - UPDATED for regular keyboards
+# Enhanced AI text handler - UPDATED for multilingual support
 @dp.message(F.text)
 async def handle_text_message(message: types.Message):
     """Handle text messages with enhanced coffee AI and menu navigation"""
@@ -983,35 +1431,67 @@ async def handle_text_message(message: types.Message):
         return
     
     is_admin_user = is_admin(user_id)
+    lang = get_user_language(user_id)
     
-    # Handle menu navigation with regular keyboards
-    if text in [_(user_id, 'menu_personal'), "🏠 Shaxsiy Kabinet"]:
-        await personal_cabinet_handler(message)
-        return
-    elif text in [_(user_id, 'menu_employees'), "👥 Hodimlar"] and is_admin_user:
-        await employees_handler(message)
-        return
-    elif text in [_(user_id, 'menu_cleaning'), "🧹 Tozalik"]:
-        await cleaning_handler(message)
-        return
-    elif text in [_(user_id, 'menu_reports'), "📊 Hisobotlar"]:
-        await reports_handler(message)
-        return
-    elif text in [_(user_id, 'menu_ai_help'), "🤖 AI Yordam"]:
-        await ai_help_handler(message)
-        return
-    elif text in [_(user_id, 'menu_restaurant'), "🏢 Restoran"]:
-        await restaurant_handler(message)
-        return
-    elif text in [_(user_id, 'menu_settings'), "⚙️ Sozlamalar"]:
-        await settings_handler(message)
-        return
-    elif text in [_(user_id, 'main_menu'), "🏠 Bosh Menyu"]:
-        await main_menu_handler(message)
-        return
+    # Handle menu navigation with multilingual support
+    menu_handlers = {
+        # Personal Cabinet - all languages
+        **{key: personal_cabinet_handler for key in [
+            get_menu_text(user_id, 'menu_personal'), "🏠 Shaxsiy Kabinet", 
+            "🏠 Личный Кабинет", "🏠 Personal Cabinet"
+        ]},
+        
+        # Employees - Admin only, all languages  
+        **{key: employees_handler for key in [
+            get_menu_text(user_id, 'menu_employees'), "👥 Hodimlar",
+            "👥 Сотрудники", "👥 Employees"
+        ] if is_admin_user},
+        
+        # Cleaning - all languages
+        **{key: cleaning_handler for key in [
+            get_menu_text(user_id, 'menu_cleaning'), "🧹 Tozalik",
+            "🧹 Уборка", "🧹 Cleaning"
+        ]},
+        
+        # Reports - all languages
+        **{key: reports_handler for key in [
+            get_menu_text(user_id, 'menu_reports'), "📊 Hisobotlar",
+            "📊 Отчеты", "📊 Reports"
+        ]},
+        
+        # AI Help - all languages
+        **{key: ai_help_handler for key in [
+            get_menu_text(user_id, 'menu_ai_help'), "🤖 AI Yordam",
+            "🤖 AI Помощь", "🤖 AI Help"
+        ]},
+        
+        # Restaurant - all languages
+        **{key: restaurant_handler for key in [
+            get_menu_text(user_id, 'menu_restaurant'), "🏢 Restoran",
+            "🏢 Ресторан", "🏢 Restaurant"
+        ]},
+        
+        # Settings - all languages
+        **{key: settings_handler for key in [
+            get_menu_text(user_id, 'menu_settings'), "⚙️ Sozlamalar",
+            "⚙️ Настройки", "⚙️ Settings"
+        ]},
+        
+        # Main Menu - all languages
+        **{key: main_menu_handler for key in [
+            get_menu_text(user_id, 'main_menu'), "🏠 Bosh Menyu",
+            "🏠 Главное Меню", "🏠 Main Menu"
+        ]}
+    }
+    
+    # Check menu handlers
+    for menu_text, handler in menu_handlers.items():
+        if text == menu_text:
+            await handler(message)
+            return
     
     # Handle language selection
-    elif text == "🇺🇿 O'zbek tili":
+    if text == "🇺🇿 O'zbek tili":
         await language_change_handler(message, 'uz')
         return
     elif text == "🇷🇺 Русский язык":
@@ -1021,21 +1501,47 @@ async def handle_text_message(message: types.Message):
         await language_change_handler(message, 'en')
         return
     
-    # Handle personal cabinet submenu
-    elif text == "📊 Mening Statistikam":
-        await my_detailed_stats_handler(message)
-        return
-    elif text == "📋 Mening Vazifalarim":
-        await my_tasks_handler(message)
+    # Handle personal cabinet submenu - multilingual
+    personal_submenu_handlers = {
+        # Statistics
+        **{key: my_detailed_stats_handler for key in [
+            "📊 Mening Statistikam", "📊 Моя Статистика", "📊 My Statistics"
+        ]},
+        # Tasks
+        **{key: my_tasks_handler for key in [
+            "📋 Mening Vazifalarim", "📋 Мои Задачи", "📋 My Tasks"
+        ]}
+    }
+    
+    for menu_text, handler in personal_submenu_handlers.items():
+        if text == menu_text:
+            await handler(message)
+            return
+    
+    # Handle AI help topics - multilingual
+    ai_topic_handlers = {
+        "☕ Espresso": ("☕ Espresso", 'espresso tayyorlash'),
+        "🥛 Latte": ("🥛 Latte", 'latte retsepti'),
+        "☕ Cappuccino": ("☕ Cappuccino", 'cappuccino qanday tayyorlanadi'),
+        "🫘 Kofe Donlari": ("🫘 Kofe Donlari", 'kofe donlari haqida'),
+        "🫘 Кофейные Зерна": ("🫘 Кофейные Зерна", 'kofe donlari haqida'),
+        "🫘 Coffee Beans": ("🫘 Coffee Beans", 'kofe donlari haqida'),
+        "🥛 Sut Ishlash": ("🥛 Sut Ishlash", 'sut steaming texnikasi'),
+        "🥛 Взбивание Молока": ("🥛 Взбивание Молока", 'sut steaming texnikasi'),
+        "🥛 Milk Steaming": ("🥛 Milk Steaming", 'sut steaming texnikasi'),
+        "🎨 Latte Art": ("🎨 Latte Art", 'latte art qanday qilinadi'),
+        "☕ Эспрессо": ("☕ Эспрессо", 'espresso tayyorlash'),
+        "🥛 Латте": ("🥛 Латте", 'latte retsepti'),
+        "☕ Капучино": ("☕ Капучино", 'cappuccino qanday tayyorlanadi')
+    }
+    
+    if text in ai_topic_handlers:
+        topic_text, question = ai_topic_handlers[text]
+        await ai_topic_handler(message, question)
         return
     
-    # Handle AI help topics
-    elif text in ["☕ Espresso", "🥛 Latte", "☕ Cappuccino", "🫘 Kofe Donlari", "🥛 Sut Ishlash", "🎨 Latte Art"]:
-        await ai_topic_handler(message, text)
-        return
-    
-    # Handle cleaning submenu
-    elif text == "📸 Hojatxona Tekshiruvi":
+    # Handle cleaning submenu - multilingual  
+    if text in ["📸 Hojatxona Tekshiruvi", "📸 Проверка Туалета", "📸 Bathroom Check"]:
         await bathroom_check_handler(message)
         return
     
@@ -1290,22 +1796,27 @@ I can provide professional help with coffee shop operations and coffee preparati
     
     await message.answer(text, reply_markup=ai_help_keyboard(user_id))
 
-async def ai_topic_handler(message: types.Message, topic_text: str):
-    """AI topic handler"""
+async def ai_topic_handler(message: types.Message, question: str):
+    """AI topic handler - updated to use question directly"""
     user_id = message.from_user.id
     
-    # Map button text to topics
-    topic_map = {
-        "☕ Espresso": 'espresso tayyorlash',
-        "🥛 Latte": 'latte retsepti',
-        "☕ Cappuccino": 'cappuccino qanday tayyorlanadi',
-        "🫘 Kofe Donlari": 'kofe donlari haqida',
-        "🥛 Sut Ishlash": 'sut steaming texnikasi',
-        "🎨 Latte Art": 'latte art qanday qilinadi'
+    # Show typing indicator
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    
+    # Get employee context
+    employee = get_employee_by_telegram(user_id)
+    employee_context = {
+        "name": employee[1] if employee else "Unknown",
+        "position": employee[3] if employee else "Unknown",
+        "id": employee[0] if employee else 0
     }
     
-    question = topic_map.get(topic_text, 'kofe tayyorlash')
-    content = get_enhanced_static_coffee_response(question, user_id)
+    # Get AI response using the question
+    content = await get_enhanced_coffee_ai_response(question, employee_context, user_id)
+    
+    # Save AI request if employee exists
+    if employee:
+        save_ai_request(employee[0], question, content)
     
     await message.answer(content, reply_markup=back_to_menu_keyboard(user_id))
 
