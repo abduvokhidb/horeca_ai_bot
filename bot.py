@@ -1511,4 +1511,9 @@ def get_enhanced_static_coffee_response(question, user_id=None):
     responses = coffee_responses.get(lang, coffee_responses['uz'])
     
     # Check for coffee-related keywords
-    coffee_keywords = ['latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk', 'bean', 'don', 'steam', 'bug', 'art', 'foam',
+coffee_keywords = [
+    'latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk',
+    'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind',
+    'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta',
+    'origin', 'blend', 'pour', 'tamping', 'dosing'
+]
