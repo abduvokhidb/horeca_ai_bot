@@ -1,18 +1,18 @@
 coffee_keywords = ['latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk', 'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind', 'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta', 'origin', 'blend', 'pour', 'tamping', 'dosing']
     
-    # Check if question is coffee-related
-    is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
+# Check if question is coffee-related
+is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
     
-    if not is_coffee_related:
+if not is_coffee_related:
         return responses['not_coffee']
     
-    # Find specific coffee topic
-    for keyword, response in responses.items():
-        if keyword in question_lower and keyword != 'not_coffee':
-            return response
+# Find specific coffee topic
+for keyword, response in responses.items():
+    if keyword in question_lower and keyword != 'not_coffee':
+        return response
     
-    # Default coffee response
-    return responses.get('espresso', responses['not_coffee'])
+# Default coffee response
+return responses.get('espresso', responses['not_coffee'])
 
 # Keyboard builders with role-based access
 def main_menu_keyboard(user_id, is_admin_user=False):
@@ -286,7 +286,7 @@ async def my_detailed_stats_callback(callback: types.CallbackQuery):
     stats_text = _(user_id, 'personal_stats',
                    name=employee[1],
                    total_checks=stats['total_checks'],
-                   approved_checks=stats['approved_checks'], 
+                   approved_checks=stats['approved_checks'],
                    success_rate=stats['success_rate'],
                    ai_requests=stats['ai_requests'],
                    position=employee[3],
@@ -317,7 +317,7 @@ async def settings_callback(callback: types.CallbackQuery):
     
     lang_names = {
         'uz': "O'zbek tili 🇺🇿",
-        'ru': "Русский язык 🇷🇺", 
+        'ru': "Русский язык 🇷🇺",
         'en': "English Language 🇬🇧"
     }
     
@@ -710,7 +710,7 @@ async def handle_photo(message: types.Message):
         # Details
         result_text += f"{'✅' if analysis_result['toilet_paper'] else '❌'} **Tualet qogozi:** {'Bor' if analysis_result['toilet_paper'] else 'Yo\'q'}\n"
         result_text += f"🧴 **Sovun:** {analysis_result['soap']}\n"
-        result_text += f"🚽 **Unitaz:** {analysis_result['toilet']}\n" 
+        result_text += f"🚽 **Unitaz:** {analysis_result['toilet']}\n"
         result_text += f"🪣 **Pollar:** {analysis_result['floor']}\n"
         result_text += f"🧽 **Lavabo:** {analysis_result['sink']}\n\n"
         
@@ -767,7 +767,7 @@ async def reports_callback(callback: types.CallbackQuery):
     )
     
     report_text = "📊 **Hisobotlar Bo'limi**\n\n" + (
-        "Admin sifatida barcha hisobotlarni ko'rishingiz mumkin:" if is_admin(user_id) 
+        "Admin sifatida barcha hisobotlarni ko'rishingiz mumkin:" if is_admin(user_id)
         else "Shaxsiy va jamoaviy ko'rsatkichlaringizni ko'ring:"
     )
     
@@ -977,7 +977,7 @@ Path("logs").mkdir(exist_ok=True)
 TEST_EMPLOYEES = [
     {"name": "Admin", "phone": "+998900007747", "position": "Admin"},
     {"name": "Akmal Karimov", "phone": "+998901234567", "position": "Barista"},
-    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"}, 
+    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"},
     {"name": "Maryam Tosheva", "phone": "+998901234569", "position": "Tozalovchi"},
     {"name": "Jasur Olimov", "phone": "+998901234570", "position": "Servis Manager"},
 ]
@@ -989,7 +989,7 @@ TRANSLATIONS = {
         'welcome_admin': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Admin\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
         'welcome_guest': "👋 Salom {username}!\n\n🤖 **Horeca AI Bot**ga xush kelibsiz!\n\n📱 Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:\n\n📝 **Namuna:** +998901234567",
         'menu_personal': "🏠 Shaxsiy Kabinet",
-        'menu_employees': "👥 Hodimlar", 
+        'menu_employees': "👥 Hodimlar",
         'menu_cleaning': "🧹 Tozalik",
         'menu_reports': "📊 Hisobotlar",
         'menu_ai_help': "🤖 AI Yordam",
@@ -998,7 +998,7 @@ TRANSLATIONS = {
         'menu_admin': "🛠️ Admin Panel",
         'main_menu': "🏠 Bosh Menyu",
         'language_uzbek': "🇺🇿 O'zbek tili",
-        'language_russian': "🇷🇺 Rus tili", 
+        'language_russian': "🇷🇺 Rus tili",
         'language_english': "🇬🇧 English Language",
         'phone_not_found': "❌ **Telefon raqam topilmadi!**\n\n🔍 Quyidagilarni tekshiring:\n• To'g'ri formatda yozdingizmi? (+998xxxxxxxxx)\n• Raqam ro'yxatda bormi?\n\n🆘 Yordam kerak bo'lsa admin bilan bog'laning.",
         'ai_coffee_context': "Siz qahvaxona/kafe uchun professional barista yordamchisiz. Faqat qahva, kofe, ichimliklar, barista skills va qahvaxona operatsiyalari haqida javob bering.",
@@ -1010,7 +1010,7 @@ TRANSLATIONS = {
         'welcome_guest': "👋 Привет {username}!\n\n🤖 **Добро пожаловать в Horeca AI Bot**!\n\n📱 Для регистрации отправьте ваш номер телефона:\n\n📝 **Пример:** +998901234567",
         'menu_personal': "🏠 Личный Кабинет",
         'menu_employees': "👥 Сотрудники",
-        'menu_cleaning': "🧹 Уборка", 
+        'menu_cleaning': "🧹 Уборка",
         'menu_reports': "📊 Отчеты",
         'menu_ai_help': "🤖 AI Помощь",
         'menu_restaurant': "🏢 Ресторан",
@@ -1031,7 +1031,7 @@ TRANSLATIONS = {
         'menu_personal': "🏠 Personal Cabinet",
         'menu_employees': "👥 Employees",
         'menu_cleaning': "🧹 Cleaning",
-        'menu_reports': "📊 Reports", 
+        'menu_reports': "📊 Reports",
         'menu_ai_help': "🤖 AI Help",
         'menu_restaurant': "🏢 Restaurant",
         'menu_settings': "⚙️ Settings",
@@ -1348,7 +1348,7 @@ async def get_enhanced_coffee_ai_response(question, employee_context=None, user_
             lang = get_user_language(user_id) if user_id else 'uz'
             context_lang = {
                 'uz': "O'zbek tilida",
-                'ru': "на русском языке", 
+                'ru': "на русском языке",
                 'en': "in English"
             }.get(lang, "O'zbek tilida")
             
