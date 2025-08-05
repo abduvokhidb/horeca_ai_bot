@@ -1,11 +1,160 @@
-def get_coffee_response(question_lower, responses):
-    coffee_keywords = [
-        'latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk',
-        'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind',
-        'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta',
-        'origin', 'blend', 'pour', 'tamping', 'dosing'
-    ]
+#!/usr/bin/env python3
+"""
+Enhanced Horeca AI Bot - Role-based & Multi-language
+- Role-based access control
+- Personal cabinet for employees
+- Enhanced AI for coffee/barista topics
+- Multi-language support (UZ/RU/EN)
+"""
 
+import asyncio
+import sqlite3
+import os
+import json
+import random
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+
+# Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8005801479:AAENfmXu1fCX7srHvBxLPhLaKNwydC_r23A")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "horeca_bot.db")
+PORT = int(os.getenv("PORT", 8000))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# AI availability check
+AI_ENABLED = bool(OPENAI_API_KEY and OPENAI_API_KEY.startswith('sk-'))
+
+if AI_ENABLED:
+    try:
+        import openai
+        openai.api_key = OPENAI_API_KEY
+        print("🤖 Real AI enabled with OpenAI")
+    except ImportError:
+        AI_ENABLED = False
+        print("⚠️ OpenAI not installed, using demo mode")
+else:
+    print("🎭 Demo AI mode - add OPENAI_API_KEY for real AI")
+
+# Initialize bot
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Create directories
+Path("photos").mkdir(exist_ok=True)
+Path("logs").mkdir(exist_ok=True)
+
+# Test employees data
+TEST_EMPLOYEES = [
+    {"name": "Admin", "phone": "+998900007747", "position": "Admin"},
+    {"name": "Akmal Karimov", "phone": "+998901234567", "position": "Barista"},
+    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"},
+    {"name": "Maryam Tosheva", "phone": "+998901234569", "position": "Tozalovchi"},
+    {"name": "Jasur Olimov", "phone": "+998901234570", "position": "Servis Manager"},
+]
+
+# Language translations
+TRANSLATIONS = {
+    'uz': {
+        'welcome_employee': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Hodim\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
+        'welcome_admin': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Admin\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
+        'welcome_guest': "👋 Salom {username}!\n\n🤖 **Horeca AI Bot**ga xush kelibsiz!\n\n📱 Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:\n\n📝 **Namuna:** +998901234567",
+        'menu_personal': "🏠 Shaxsiy Kabinet",
+        'menu_employees': "👥 Hodimlar",
+        'menu_cleaning': "🧹 Tozalik",
+        'menu_reports': "📊 Hisobotlar",
+        'menu_ai_help': "🤖 AI Yordam",
+        'menu_restaurant': "🏢 Restoran",
+        'menu_settings': "⚙️ Sozlamalar",
+        'menu_admin': "🛠️ Admin Panel",
+        'main_menu': "🏠 Bosh Menyu",
+        'language_uzbek': "🇺🇿 O'zbek tili",
+        'language_russian': "🇷🇺 Rus tili",
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Telefon raqam topilmadi!**\n\n🔍 Quyidagilarni tekshiring:\n• To'g'ri formatda yozdingizmi? (+998xxxxxxxxx)\n• Raqam ro'yxatda bormi?\n\n🆘 Yordam kerak bo'lsa admin bilan bog'laning.",
+        'ai_coffee_context': "Siz qahvaxona/kafe uchun professional barista yordamchisiz. Faqat qahva, kofe, ichimliklar, barista skills va qahvaxona operatsiyalari haqida javob bering.",
+        'personal_stats': "📈 **{name} - Shaxsiy Statistika**\n\n🧹 **Tozalik Tekshiruvlari:**\n• Jami: {total_checks} ta\n• Qabul qilingan: {approved_checks} ta\n• Muvaffaqiyat: {success_rate:.1f}%\n\n🤖 **AI So'rovlari:** {ai_requests} ta\n\n🎯 **Lavozim:** {position}\n📅 **Faollik:** {current_month}"
+    },
+    'ru': {
+        'welcome_employee': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Сотрудник\n\n📱 Выберите нужный раздел из меню:",
+        'welcome_admin': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Админ\n\n📱 Выберите нужный раздел из меню:",
+        'welcome_guest': "👋 Привет {username}!\n\n🤖 **Добро пожаловать в Horeca AI Bot**!\n\n📱 Для регистрации отправьте ваш номер телефона:\n\n📝 **Пример:** +998901234567",
+        'menu_personal': "🏠 Личный Кабинет",
+        'menu_employees': "👥 Сотрудники",
+        'menu_cleaning': "🧹 Уборка",
+        'menu_reports': "📊 Отчеты",
+        'menu_ai_help': "🤖 AI Помощь",
+        'menu_restaurant': "🏢 Ресторан",
+        'menu_settings': "⚙️ Настройки",
+        'menu_admin': "🛠️ Админ Панель",
+        'main_menu': "🏠 Главное Меню",
+        'language_uzbek': "🇺🇿 Узбекский язык",
+        'language_russian': "🇷🇺 Русский язык",
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Номер телефона не найден!**\n\n🔍 Проверьте:\n• Правильный ли формат? (+998xxxxxxxxx)\n• Есть ли номер в списке?\n\n🆘 Если нужна помощь, свяжитесь с админом.",
+        'ai_coffee_context': "Вы профессиональный помощник бариста для кофейни/кафе. Отвечайте только на вопросы о кофе, напитках, навыках бариста и операциях кофейни.",
+        'personal_stats': "📈 **{name} - Личная Статистика**\n\n🧹 **Проверки Уборки:**\n• Всего: {total_checks} шт\n• Принято: {approved_checks} шт\n• Успешность: {success_rate:.1f}%\n\n🤖 **AI Запросы:** {ai_requests} шт\n\n🎯 **Должность:** {position}\n📅 **Активность:** {current_month}"
+    },
+    'en': {
+        'welcome_employee': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Employee\n\n📱 Please select the required section from the menu:",
+        'welcome_admin': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Admin\n\n📱 Please select the required section from the menu:",
+        'welcome_guest': "👋 Hello {username}!\n\n🤖 **Welcome to Horeca AI Bot**!\n\n📱 To register, please send your phone number:\n\n📝 **Example:** +998901234567",
+        'menu_personal': "🏠 Personal Cabinet",
+        'menu_employees': "👥 Employees",
+        'menu_cleaning': "🧹 Cleaning",
+        'menu_reports': "📊 Reports",
+        'menu_ai_help': "🤖 AI Help",
+        'menu_restaurant': "🏢 Restaurant",
+        'menu_settings': "⚙️ Settings",
+        'menu_admin': "🛠️ Admin Panel",
+        'main_menu': "🏠 Main Menu",
+        'language_uzbek': "🇺🇿 Uzbek Language",
+        'language_russian': "🇷🇺 Russian Language",
+        'language_english': "🇬🇧 English Language",
+        'phone_not_found': "❌ **Phone number not found!**\n\n🔍 Please check:\n• Correct format? (+998xxxxxxxxx)\n• Is the number registered?\n\n🆘 If you need help, contact admin.",
+        'ai_coffee_context': "You are a professional barista assistant for coffee shops/cafes. Only answer questions about coffee, drinks, barista skills, and coffee shop operations.",
+        'personal_stats': "📈 **{name} - Personal Statistics**\n\n🧹 **Cleaning Checks:**\n• Total: {total_checks} items\n• Approved: {approved_checks} items\n• Success Rate: {success_rate:.1f}%\n\n🤖 **AI Requests:** {ai_requests} items\n\n🎯 **Position:** {position}\n📅 **Activity:** {current_month}"
+    }
+}
+
+# User language storage (in real app, store in database)
+user_languages = {}
+
+def get_user_language(user_id):
+    """Get user's preferred language"""
+    return user_languages.get(user_id, 'uz')  # Default to Uzbek
+
+def set_user_language(user_id, language):
+    """Set user's preferred language"""
+    user_languages[user_id] = language
+
+def _(user_id, key, **kwargs):
+    """Get translated text"""
+    lang = get_user_language(user_id)
+    text = TRANSLATIONS.get(lang, TRANSLATIONS['uz']).get(key, key)
+    if kwargs:
+        try:
+            return text.format(**kwargs)
+        except:
+            return text
+    return text
+
+# Coffee keywords for AI response filtering
+coffee_keywords = [
+    'latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk',
+    'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind',
+    'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta',
+    'origin', 'blend', 'pour', 'tamping', 'dosing'
+]
+
+def get_coffee_response(question_lower, responses):
+    """Get coffee-related response"""
     is_coffee_related = any(keyword in question_lower for keyword in coffee_keywords)
     if not is_coffee_related:
         return responses['not_coffee']
@@ -16,11 +165,448 @@ def get_coffee_response(question_lower, responses):
 
     return responses.get('espresso', responses['not_coffee'])
 
-    if keyword in question_lower and keyword != 'not_coffee':
-        return response
+# Database functions
+def init_database():
+    """Initialize SQLite database"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Employees table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS employees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT UNIQUE NOT NULL,
+                position TEXT NOT NULL,
+                telegram_id INTEGER UNIQUE,
+                language TEXT DEFAULT 'uz',
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Personal tasks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS personal_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                task_title TEXT NOT NULL,
+                task_description TEXT,
+                is_completed BOOLEAN DEFAULT 0,
+                due_date TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Work schedules table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS work_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                work_date DATE,
+                start_time TIME,
+                end_time TIME,
+                break_start TIME DEFAULT '13:00',
+                break_end TIME DEFAULT '14:00',
+                is_day_off BOOLEAN DEFAULT 0,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Cleaning checks table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cleaning_checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                photo_path TEXT,
+                ai_result TEXT,
+                is_approved BOOLEAN DEFAULT 0,
+                notes TEXT,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Restaurant info table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS restaurant_info (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                info_key TEXT UNIQUE NOT NULL,
+                info_value TEXT NOT NULL,
+                updated_by TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # AI requests table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (employee_id) REFERENCES employees (id)
+            )
+        ''')
+        
+        # Insert test employees
+        for emp in TEST_EMPLOYEES:
+            cursor.execute("""
+                INSERT OR IGNORE INTO employees (name, phone, position)
+                VALUES (?, ?, ?)
+            """, (emp["name"], emp["phone"], emp["position"]))
+        
+        # Insert sample personal tasks for barista
+        barista_tasks = [
+            ("Espresso mashinasini tozalash", "Har kuni oxirida espresso mashinasini to'liq tozalash", False),
+            ("Kofe don inventarizatsiyasi", "Kofe donlari zaxirasini tekshirish va hisobot", False),
+            ("Latte art o'rganish", "Yangi latte art texnikalarini o'rganish", False),
+        ]
+        
+        for task_title, task_desc, is_completed in barista_tasks:
+            cursor.execute("""
+                INSERT OR IGNORE INTO personal_tasks (employee_id, task_title, task_description, is_completed, due_date)
+                SELECT id, ?, ?, ?, datetime('now', '+7 days')
+                FROM employees WHERE position = 'Barista' AND name = 'Akmal Karimov'
+            """, (task_title, task_desc, is_completed))
+        
+        # Insert default restaurant info
+        default_info = [
+            ('name', 'Demo Restoran'),
+            ('description', 'Zamonaviy restoran - sifatli xizmat va mazali taomlar'),
+            ('working_hours', '09:00 - 23:00'),
+            ('contact', '+998900007747'),
+        ]
+        
+        for key, value in default_info:
+            cursor.execute("""
+                INSERT OR IGNORE INTO restaurant_info (info_key, info_value, updated_by)
+                VALUES (?, ?, 'system')
+            """, (key, value))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        return False
+
+def get_employee_by_telegram(telegram_id):
+    """Get employee by Telegram ID"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, name, phone, position, telegram_id, is_active, language
+            FROM employees 
+            WHERE telegram_id = ? AND is_active = 1
+        """, (telegram_id,))
+        employee = cursor.fetchone()
+        conn.close()
+        return employee
+    except Exception as e:
+        print(f"Get employee error: {e}")
+        return None
+
+def register_employee_telegram(phone, telegram_id):
+    """Register employee's Telegram ID"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE employees 
+            SET telegram_id = ? 
+            WHERE phone = ? AND is_active = 1
+        """, (telegram_id, phone))
+        success = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return success
+    except Exception as e:
+        print(f"Register employee error: {e}")
+        return False
+
+def is_admin(telegram_id):
+    """Check if user is admin"""
+    employee = get_employee_by_telegram(telegram_id)
+    return employee and employee[3].lower() == 'admin'
+
+def get_personal_stats(employee_id):
+    """Get personal statistics for employee"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Get cleaning checks stats
+        cursor.execute("""
+            SELECT COUNT(*) FROM cleaning_checks 
+            WHERE employee_id = ?
+        """, (employee_id,))
+        total_checks = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT COUNT(*) FROM cleaning_checks 
+            WHERE employee_id = ? AND is_approved = 1
+        """, (employee_id,))
+        approved_checks = cursor.fetchone()[0]
+        
+        # Get AI requests stats
+        cursor.execute("""
+            SELECT COUNT(*) FROM ai_requests 
+            WHERE employee_id = ?
+        """, (employee_id,))
+        ai_requests = cursor.fetchone()[0]
+        
+        # Get pending tasks
+        cursor.execute("""
+            SELECT COUNT(*) FROM personal_tasks 
+            WHERE employee_id = ? AND is_completed = 0
+        """, (employee_id,))
+        pending_tasks = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        success_rate = (approved_checks / total_checks * 100) if total_checks > 0 else 0
+        
+        return {
+            'total_checks': total_checks,
+            'approved_checks': approved_checks,
+            'ai_requests': ai_requests,
+            'pending_tasks': pending_tasks,
+            'success_rate': success_rate
+        }
+        
+    except Exception as e:
+        print(f"Get personal stats error: {e}")
+        return None
+
+def get_personal_tasks(employee_id):
+    """Get personal tasks for employee"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT task_title, task_description, is_completed, due_date
+            FROM personal_tasks 
+            WHERE employee_id = ?
+            ORDER BY is_completed ASC, due_date ASC
+            LIMIT 10
+        """, (employee_id,))
+        
+        tasks = cursor.fetchall()
+        conn.close()
+        return tasks
+        
+    except Exception as e:
+        print(f"Get personal tasks error: {e}")
+        return []
+
+def save_ai_request(employee_id, question, answer):
+    """Save AI request to database"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ai_requests (employee_id, question, answer)
+            VALUES (?, ?, ?)
+        """, (employee_id, question, answer))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Save AI request error: {e}")
+
+def save_cleaning_check(employee_id, photo_path, ai_result, is_approved):
+    """Save cleaning check result"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO cleaning_checks (employee_id, photo_path, ai_result, is_approved)
+            VALUES (?, ?, ?, ?)
+        """, (employee_id, photo_path, json.dumps(ai_result), is_approved))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Save cleaning check error: {e}")
+
+# Enhanced AI system for coffee/barista topics
+async def get_enhanced_coffee_ai_response(question, employee_context=None, user_id=None):
+    """Enhanced AI response focused on coffee/barista topics"""
     
-# Default coffee response
-return responses.get('espresso', responses['not_coffee'])
+    if AI_ENABLED:
+        try:
+            print("🤖 Using enhanced coffee AI...")
+            
+            lang = get_user_language(user_id) if user_id else 'uz'
+            context_lang = {
+                'uz': "O'zbek tilida",
+                'ru': "на русском языке",
+                'en': "in English"
+            }.get(lang, "O'zbek tilida")
+            
+            context = f"""Siz professional qahvaxona/kafe uchun barista yordamchisiz. {context_lang} javob bering.
+
+Hodim ma'lumotlari:
+- Ism: {employee_context.get('name', 'Noma\'lum') if employee_context else 'Noma\'lum'}
+- Lavozim: {employee_context.get('position', 'Noma\'lum') if employee_context else 'Noma\'lum'}
+
+FAQAT quyidagi mavzularda yordam bering:
+- ☕ Kofe turlari va tayyorlash usullari (espresso, latte, cappuccino, americano, va boshqalar)
+- 🥛 Sut ishlash texnikalari (steaming, frothing, microfoam)
+- 🎨 Latte art va bezatish usullari
+- ⚙️ Espresso mashinasi va jihozlar bilan ishlash
+- 📏 Kofe nisbatlari va retseptlar
+- 🌡️ Harorat va vaqt parametrlari
+- 🫘 Kofe donlari haqida ma'lumot (origin, roast levels)
+- 🧹 Qahvaxona jihozlarini tozalash va parvarish qilish
+- 👥 Mijozlar bilan qahva buyurtmalari bo'yicha muloqot
+- 📊 Qahvaxona operatsiyalari va workflow
+
+Agar savol qahvaxona/kofe mavzusidan tashqarida bo'lsa, iltimos faqat qahva bilan bog'liq savollar berishni so'rang.
+
+Javoblaringiz:
+- Professional va amaliy bo'lsin
+- Aniq retsept va yo'riqnomalar bering
+- Emoji ishlatib do'stona bo'ling
+- 2-3 paragrafdan oshmasin"""
+            
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": context},
+                    {"role": "user", "content": question}
+                ],
+                max_tokens=600,
+                temperature=0.7
+            )
+            
+            result = response.choices[0].message.content
+            print("✅ Enhanced coffee AI response generated")
+            return result
+            
+        except Exception as e:
+            print(f"❌ OpenAI chat error: {e}")
+            print("🔄 Using demo responses...")
+    
+    # Fallback to enhanced static responses
+    return get_enhanced_static_coffee_response(question, user_id)
+
+def get_enhanced_static_coffee_response(question, user_id=None):
+    """Enhanced static responses for coffee topics"""
+    question_lower = question.lower()
+    lang = get_user_language(user_id) if user_id else 'uz'
+    
+    coffee_responses = {
+        'uz': {
+            'latte': """🥛 **LATTE PROFESSIONAL RETSEPTI**
+
+☕ **Tarkibi:**
+• 1-2 shot espresso (30-60ml)
+• 150-180ml buglangan sut
+• 1cm sut ko'pigi
+
+📋 **Professional tayyorlash:**
+1. **Espresso:** 18-20g kofe, 25-30 soniya ekstraktsiya
+2. **Sut:** 60-65°C gacha bug'lang (thermometer ishlatamiz)
+3. **Microfoam:** Glossy, paint-like texture
+4. **Quyish:** Steady stream, 3-4cm balandlikdan
+5. **Latte Art:** Heart yoki tulip pattern
+
+💡 **Pro tips:**
+• Fresh sut ishlatamiz (2-3 kun ichida)
+• Steam wand har safar tozalanadi
+• Sut ikki marta bug'lanmaydi
+• Perfect microfoam uchun: swirl + tap technique""",
+
+            'cappuccino': """☕ **CAPPUCCINO MASTERCLASS**
+
+🎯 **Classic nisbat:**
+• 1 shot espresso (30ml)
+• 60ml buglangan sut
+• 60ml sut ko'pigi (dense foam)
+
+⚡ **Tayyorlash texnikasi:**
+1. **Espresso:** Double shot, 25-30 sek
+2. **Foam creation:** Dense, velvety microfoam
+3. **Temperature:** 65-70°C (lip-burning hot)
+4. **Texture:** Thick, creamy consistency
+5. **Presentation:** Ko'pik ustiga cocoa powder
+
+🎨 **Italian style vs Modern:**
+• **Traditional:** Ko'proq foam, kam sut
+• **Modern:** Latte art bilan, microfoam focus
+• **Wet vs Dry:** Mijoz preferensiyasiga qarab""",
+
+            'espresso': """⚡ **PERFECT ESPRESSO GUIDE**
+
+📊 **Golden parameters:**
+• **Kofe:** 18-20g (double shot)
+• **Vaqt:** 25-30 soniya
+• **Hajm:** 36-40ml output
+• **Bosim:** 9 bar
+• **Harorat:** 92-96°C
+
+🔧 **Texnika:**
+1. **Grind:** Fine, hali powder emas
+2. **Dose:** Scales bilan aniq o'lchang
+3. **Distribution:** WDT yoki finger leveling
+4. **Tamping:** 15-20kg bosim, level surface
+5. **Timing:** Extraction vaqtini kuzating
+
+❌ **Xatolar va yechimlar:**
+• **Sour/Under:** Grind finer, vaqt uzaytiring
+• **Bitter/Over:** Grind coarser, vaqt qisqartiring
+• **Channeling:** Distribution yaxshilang""",
+
+            'milk_steaming': """🥛 **PROFESSIONAL MILK STEAMING**
+
+🌡️ **Temperature zones:**
+• **Start:** Room temperature (4-6°C)
+• **Finish:** 60-65°C (hand test: 3 soniya ushlab turolasiz)
+• **Limit:** 70°C dan oshmang (protein buziladi)
+
+🎯 **Steaming technique:**
+1. **Position:** Steam wand surface yaqinida
+2. **Stretching phase:** 0-5 soniya, havo qo'shamiz
+3. **Heating phase:** 5-30 soniya, chuqurroq tiqish
+4. **Texture:** Glossy, paint-like consistency
+
+💡 **Pro secrets:**
+• **Wand angle:** 15-30 daraja
+• **Jug size:** Sut hajmidan 2 barobar katta
+• **Swirling:** Steam tugagach darhol aylantiring
+• **Tap technique:** Bubbles integration uchun""",
+
+            'coffee_beans': """🫘 **KOFE DONLARI HAQIDA**
+
+🌍 **Origin characteristics:**
+• **Ethiopia:** Floral, fruity notes
+• **Colombia:** Balanced, nutty-chocolate
+• **Brazil:** Nutty, low acidity
+• **Guatemala:** Full body, spicy notes
+
+🔥 **Roast levels:**
+• **Light:** Bright, acidic, origin flavors
+• **Medium:** Balanced, caramelized notes
+• **Dark:** Bold, bitter, less origin character
+
+📅 **Freshness rules:**
+• **Optimal:** 7-21 kun roast qilinganidan keyin
+• **Grind:** Ishlatishdan 30 daqiqa oldin
+• **Storage:** Cool, dry place, airtight container
+• **Avoid:** Freezer, direct sunlight, moisture""",
+
+            'not_coffee': "❌ Kechirasiz, men faqat qahvaxona va kofe mavzularida yordam bera olaman. ☕\n\nQuyidagi mavzularda savol bering:\n• Kofe tayyorlash usullari\n• Latte art texnikalari\n• Espresso sozlamalari\n• Sut ishlash\n• Qahvaxona jihozlari\n\nQahva bilan bog'liq savolingiz bormi? 😊"
+        }
+    }
+    
+    responses = coffee_responses.get(lang, coffee_responses['uz'])
+    return get_coffee_response(question_lower, responses)
 
 # Keyboard builders with role-based access
 def main_menu_keyboard(user_id, is_admin_user=False):
@@ -488,8 +1074,6 @@ async def employees_callback(callback: types.CallbackQuery):
     )
 
 # Continue with existing cleaning, photo handlers, etc...
-# (Keep all the existing handlers from the previous code)
-
 waiting_for_photo = {}
 
 @dp.callback_query(F.data == "cleaning")
@@ -929,599 +1513,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n👋 Bot terminated")
     except Exception as e:
-        print(f"❌ Startup error: {e}")#!/usr/bin/env python3
-"""
-Enhanced Horeca AI Bot - Role-based & Multi-language
-- Role-based access control
-- Personal cabinet for employees
-- Enhanced AI for coffee/barista topics
-- Multi-language support (UZ/RU/EN)
-"""
-
-import asyncio
-import sqlite3
-import os
-import json
-import random
-from datetime import datetime, timedelta
-from pathlib import Path
-
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
-# Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8005801479:AAENfmXu1fCX7srHvBxLPhLaKNwydC_r23A")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "horeca_bot.db")
-PORT = int(os.getenv("PORT", 8000))
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# AI availability check
-AI_ENABLED = bool(OPENAI_API_KEY and OPENAI_API_KEY.startswith('sk-'))
-
-if AI_ENABLED:
-    try:
-        import openai
-        openai.api_key = OPENAI_API_KEY
-        print("🤖 Real AI enabled with OpenAI")
-    except ImportError:
-        AI_ENABLED = False
-        print("⚠️ OpenAI not installed, using demo mode")
-else:
-    print("🎭 Demo AI mode - add OPENAI_API_KEY for real AI")
-
-# Initialize bot
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
-
-# Create directories
-Path("photos").mkdir(exist_ok=True)
-Path("logs").mkdir(exist_ok=True)
-
-# Test employees data
-TEST_EMPLOYEES = [
-    {"name": "Admin", "phone": "+998900007747", "position": "Admin"},
-    {"name": "Akmal Karimov", "phone": "+998901234567", "position": "Barista"},
-    {"name": "Dilnoza Rakhimova", "phone": "+998901234568", "position": "Kassir"},
-    {"name": "Maryam Tosheva", "phone": "+998901234569", "position": "Tozalovchi"},
-    {"name": "Jasur Olimov", "phone": "+998901234570", "position": "Servis Manager"},
-]
-
-# Language translations
-TRANSLATIONS = {
-    'uz': {
-        'welcome_employee': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Hodim\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
-        'welcome_admin': "🎉 Salom {name}!\n\n🏢 Horeca AI Bot'ga xush kelibsiz!\n🎯 Lavozim: {position}\n⭐ Status: Admin\n\n📱 Quyidagi menyudan kerakli bo'limni tanlang:",
-        'welcome_guest': "👋 Salom {username}!\n\n🤖 **Horeca AI Bot**ga xush kelibsiz!\n\n📱 Ro'yxatdan o'tish uchun telefon raqamingizni yuboring:\n\n📝 **Namuna:** +998901234567",
-        'menu_personal': "🏠 Shaxsiy Kabinet",
-        'menu_employees': "👥 Hodimlar",
-        'menu_cleaning': "🧹 Tozalik",
-        'menu_reports': "📊 Hisobotlar",
-        'menu_ai_help': "🤖 AI Yordam",
-        'menu_restaurant': "🏢 Restoran",
-        'menu_settings': "⚙️ Sozlamalar",
-        'menu_admin': "🛠️ Admin Panel",
-        'main_menu': "🏠 Bosh Menyu",
-        'language_uzbek': "🇺🇿 O'zbek tili",
-        'language_russian': "🇷🇺 Rus tili",
-        'language_english': "🇬🇧 English Language",
-        'phone_not_found': "❌ **Telefon raqam topilmadi!**\n\n🔍 Quyidagilarni tekshiring:\n• To'g'ri formatda yozdingizmi? (+998xxxxxxxxx)\n• Raqam ro'yxatda bormi?\n\n🆘 Yordam kerak bo'lsa admin bilan bog'laning.",
-        'ai_coffee_context': "Siz qahvaxona/kafe uchun professional barista yordamchisiz. Faqat qahva, kofe, ichimliklar, barista skills va qahvaxona operatsiyalari haqida javob bering.",
-        'personal_stats': "📈 **{name} - Shaxsiy Statistika**\n\n🧹 **Tozalik Tekshiruvlari:**\n• Jami: {total_checks} ta\n• Qabul qilingan: {approved_checks} ta\n• Muvaffaqiyat: {success_rate:.1f}%\n\n🤖 **AI So'rovlari:** {ai_requests} ta\n\n🎯 **Lavozim:** {position}\n📅 **Faollik:** {current_month}"
-    },
-    'ru': {
-        'welcome_employee': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Сотрудник\n\n📱 Выберите нужный раздел из меню:",
-        'welcome_admin': "🎉 Привет {name}!\n\n🏢 Добро пожаловать в Horeca AI Bot!\n🎯 Должность: {position}\n⭐ Статус: Админ\n\n📱 Выберите нужный раздел из меню:",
-        'welcome_guest': "👋 Привет {username}!\n\n🤖 **Добро пожаловать в Horeca AI Bot**!\n\n📱 Для регистрации отправьте ваш номер телефона:\n\n📝 **Пример:** +998901234567",
-        'menu_personal': "🏠 Личный Кабинет",
-        'menu_employees': "👥 Сотрудники",
-        'menu_cleaning': "🧹 Уборка",
-        'menu_reports': "📊 Отчеты",
-        'menu_ai_help': "🤖 AI Помощь",
-        'menu_restaurant': "🏢 Ресторан",
-        'menu_settings': "⚙️ Настройки",
-        'menu_admin': "🛠️ Админ Панель",
-        'main_menu': "🏠 Главное Меню",
-        'language_uzbek': "🇺🇿 Узбекский язык",
-        'language_russian': "🇷🇺 Русский язык",
-        'language_english': "🇬🇧 English Language",
-        'phone_not_found': "❌ **Номер телефона не найден!**\n\n🔍 Проверьте:\n• Правильный ли формат? (+998xxxxxxxxx)\n• Есть ли номер в списке?\n\n🆘 Если нужна помощь, свяжитесь с админом.",
-        'ai_coffee_context': "Вы профессиональный помощник бариста для кофейни/кафе. Отвечайте только на вопросы о кофе, напитках, навыках бариста и операциях кофейни.",
-        'personal_stats': "📈 **{name} - Личная Статистика**\n\n🧹 **Проверки Уборки:**\n• Всего: {total_checks} шт\n• Принято: {approved_checks} шт\n• Успешность: {success_rate:.1f}%\n\n🤖 **AI Запросы:** {ai_requests} шт\n\n🎯 **Должность:** {position}\n📅 **Активность:** {current_month}"
-    },
-    'en': {
-        'welcome_employee': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Employee\n\n📱 Please select the required section from the menu:",
-        'welcome_admin': "🎉 Hello {name}!\n\n🏢 Welcome to Horeca AI Bot!\n🎯 Position: {position}\n⭐ Status: Admin\n\n📱 Please select the required section from the menu:",
-        'welcome_guest': "👋 Hello {username}!\n\n🤖 **Welcome to Horeca AI Bot**!\n\n📱 To register, please send your phone number:\n\n📝 **Example:** +998901234567",
-        'menu_personal': "🏠 Personal Cabinet",
-        'menu_employees': "👥 Employees",
-        'menu_cleaning': "🧹 Cleaning",
-        'menu_reports': "📊 Reports",
-        'menu_ai_help': "🤖 AI Help",
-        'menu_restaurant': "🏢 Restaurant",
-        'menu_settings': "⚙️ Settings",
-        'menu_admin': "🛠️ Admin Panel",
-        'main_menu': "🏠 Main Menu",
-        'language_uzbek': "🇺🇿 Uzbek Language",
-        'language_russian': "🇷🇺 Russian Language",
-        'language_english': "🇬🇧 English Language",
-        'phone_not_found': "❌ **Phone number not found!**\n\n🔍 Please check:\n• Correct format? (+998xxxxxxxxx)\n• Is the number registered?\n\n🆘 If you need help, contact admin.",
-        'ai_coffee_context': "You are a professional barista assistant for coffee shops/cafes. Only answer questions about coffee, drinks, barista skills, and coffee shop operations.",
-        'personal_stats': "📈 **{name} - Personal Statistics**\n\n🧹 **Cleaning Checks:**\n• Total: {total_checks} items\n• Approved: {approved_checks} items\n• Success Rate: {success_rate:.1f}%\n\n🤖 **AI Requests:** {ai_requests} items\n\n🎯 **Position:** {position}\n📅 **Activity:** {current_month}"
-    }
-}
-
-# User language storage (in real app, store in database)
-user_languages = {}
-
-def get_user_language(user_id):
-    """Get user's preferred language"""
-    return user_languages.get(user_id, 'uz')  # Default to Uzbek
-
-def set_user_language(user_id, language):
-    """Set user's preferred language"""
-    user_languages[user_id] = language
-
-def _(user_id, key, **kwargs):
-    """Get translated text"""
-    lang = get_user_language(user_id)
-    text = TRANSLATIONS.get(lang, TRANSLATIONS['uz']).get(key, key)
-    if kwargs:
-        try:
-            return text.format(**kwargs)
-        except:
-            return text
-    return text
-
-# Database functions
-def init_database():
-    """Initialize SQLite database"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        # Employees table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS employees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                phone TEXT UNIQUE NOT NULL,
-                position TEXT NOT NULL,
-                telegram_id INTEGER UNIQUE,
-                language TEXT DEFAULT 'uz',
-                is_active BOOLEAN DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Personal tasks table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS personal_tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                task_title TEXT NOT NULL,
-                task_description TEXT,
-                is_completed BOOLEAN DEFAULT 0,
-                due_date TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Work schedules table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS work_schedules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                work_date DATE,
-                start_time TIME,
-                end_time TIME,
-                break_start TIME DEFAULT '13:00',
-                break_end TIME DEFAULT '14:00',
-                is_day_off BOOLEAN DEFAULT 0,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Cleaning checks table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cleaning_checks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                check_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                photo_path TEXT,
-                ai_result TEXT,
-                is_approved BOOLEAN DEFAULT 0,
-                notes TEXT,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Restaurant info table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS restaurant_info (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                info_key TEXT UNIQUE NOT NULL,
-                info_value TEXT NOT NULL,
-                updated_by TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # AI requests table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ai_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER,
-                question TEXT NOT NULL,
-                answer TEXT NOT NULL,
-                request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (employee_id) REFERENCES employees (id)
-            )
-        ''')
-        
-        # Insert test employees
-        for emp in TEST_EMPLOYEES:
-            cursor.execute("""
-                INSERT OR IGNORE INTO employees (name, phone, position)
-                VALUES (?, ?, ?)
-            """, (emp["name"], emp["phone"], emp["position"]))
-        
-        # Insert sample personal tasks for barista
-        barista_tasks = [
-            ("Espresso mashinasini tozalash", "Har kuni oxirida espresso mashinasini to'liq tozalash", False),
-            ("Kofe don inventarizatsiyasi", "Kofe donlari zaxirasini tekshirish va hisobot", False),
-            ("Latte art o'rganish", "Yangi latte art texnikalarini o'rganish", False),
-        ]
-        
-        for task_title, task_desc, is_completed in barista_tasks:
-            cursor.execute("""
-                INSERT OR IGNORE INTO personal_tasks (employee_id, task_title, task_description, is_completed, due_date)
-                SELECT id, ?, ?, ?, datetime('now', '+7 days')
-                FROM employees WHERE position = 'Barista' AND name = 'Akmal Karimov'
-            """, (task_title, task_desc, is_completed))
-        
-        # Insert default restaurant info
-        default_info = [
-            ('name', 'Demo Restoran'),
-            ('description', 'Zamonaviy restoran - sifatli xizmat va mazali taomlar'),
-            ('working_hours', '09:00 - 23:00'),
-            ('contact', '+998900007747'),
-        ]
-        
-        for key, value in default_info:
-            cursor.execute("""
-                INSERT OR IGNORE INTO restaurant_info (info_key, info_value, updated_by)
-                VALUES (?, ?, 'system')
-            """, (key, value))
-        
-        conn.commit()
-        conn.close()
-        return True
-        
-    except Exception as e:
-        print(f"Database initialization error: {e}")
-        return False
-
-def get_employee_by_telegram(telegram_id):
-    """Get employee by Telegram ID"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, name, phone, position, telegram_id, is_active, language
-            FROM employees 
-            WHERE telegram_id = ? AND is_active = 1
-        """, (telegram_id,))
-        employee = cursor.fetchone()
-        conn.close()
-        return employee
-    except Exception as e:
-        print(f"Get employee error: {e}")
-        return None
-
-def register_employee_telegram(phone, telegram_id):
-    """Register employee's Telegram ID"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE employees 
-            SET telegram_id = ? 
-            WHERE phone = ? AND is_active = 1
-        """, (telegram_id, phone))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
-    except Exception as e:
-        print(f"Register employee error: {e}")
-        return False
-
-def is_admin(telegram_id):
-    """Check if user is admin"""
-    employee = get_employee_by_telegram(telegram_id)
-    return employee and employee[3].lower() == 'admin'
-
-def get_personal_stats(employee_id):
-    """Get personal statistics for employee"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        # Get cleaning checks stats
-        cursor.execute("""
-            SELECT COUNT(*) FROM cleaning_checks 
-            WHERE employee_id = ?
-        """, (employee_id,))
-        total_checks = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM cleaning_checks 
-            WHERE employee_id = ? AND is_approved = 1
-        """, (employee_id,))
-        approved_checks = cursor.fetchone()[0]
-        
-        # Get AI requests stats
-        cursor.execute("""
-            SELECT COUNT(*) FROM ai_requests 
-            WHERE employee_id = ?
-        """, (employee_id,))
-        ai_requests = cursor.fetchone()[0]
-        
-        # Get pending tasks
-        cursor.execute("""
-            SELECT COUNT(*) FROM personal_tasks 
-            WHERE employee_id = ? AND is_completed = 0
-        """, (employee_id,))
-        pending_tasks = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        success_rate = (approved_checks / total_checks * 100) if total_checks > 0 else 0
-        
-        return {
-            'total_checks': total_checks,
-            'approved_checks': approved_checks,
-            'ai_requests': ai_requests,
-            'pending_tasks': pending_tasks,
-            'success_rate': success_rate
-        }
-        
-    except Exception as e:
-        print(f"Get personal stats error: {e}")
-        return None
-
-def get_personal_tasks(employee_id):
-    """Get personal tasks for employee"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT task_title, task_description, is_completed, due_date
-            FROM personal_tasks 
-            WHERE employee_id = ?
-            ORDER BY is_completed ASC, due_date ASC
-            LIMIT 10
-        """, (employee_id,))
-        
-        tasks = cursor.fetchall()
-        conn.close()
-        return tasks
-        
-    except Exception as e:
-        print(f"Get personal tasks error: {e}")
-        return []
-
-def save_ai_request(employee_id, question, answer):
-    """Save AI request to database"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO ai_requests (employee_id, question, answer)
-            VALUES (?, ?, ?)
-        """, (employee_id, question, answer))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Save AI request error: {e}")
-
-def save_cleaning_check(employee_id, photo_path, ai_result, is_approved):
-    """Save cleaning check result"""
-    try:
-        conn = sqlite3.connect(DATABASE_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO cleaning_checks (employee_id, photo_path, ai_result, is_approved)
-            VALUES (?, ?, ?, ?)
-        """, (employee_id, photo_path, json.dumps(ai_result), is_approved))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Save cleaning check error: {e}")
-
-# Enhanced AI system for coffee/barista topics
-async def get_enhanced_coffee_ai_response(question, employee_context=None, user_id=None):
-    """Enhanced AI response focused on coffee/barista topics"""
-    
-    if AI_ENABLED:
-        try:
-            print("🤖 Using enhanced coffee AI...")
-            
-            lang = get_user_language(user_id) if user_id else 'uz'
-            context_lang = {
-                'uz': "O'zbek tilida",
-                'ru': "на русском языке",
-                'en': "in English"
-            }.get(lang, "O'zbek tilida")
-            
-            context = f"""Siz professional qahvaxona/kafe uchun barista yordamchisiz. {context_lang} javob bering.
-
-Hodim ma'lumotlari:
-- Ism: {employee_context.get('name', 'Noma\'lum') if employee_context else 'Noma\'lum'}
-- Lavozim: {employee_context.get('position', 'Noma\'lum') if employee_context else 'Noma\'lum'}
-
-FAQAT quyidagi mavzularda yordam bering:
-- ☕ Kofe turlari va tayyorlash usullari (espresso, latte, cappuccino, americano, va boshqalar)
-- 🥛 Sut ishlash texnikalari (steaming, frothing, microfoam)
-- 🎨 Latte art va bezatish usullari
-- ⚙️ Espresso mashinasi va jihozlar bilan ishlash
-- 📏 Kofe nisbatlari va retseptlar
-- 🌡️ Harorat va vaqt parametrlari
-- 🫘 Kofe donlari haqida ma'lumot (origin, roast levels)
-- 🧹 Qahvaxona jihozlarini tozalash va parvarish qilish
-- 👥 Mijozlar bilan qahva buyurtmalari bo'yicha muloqot
-- 📊 Qahvaxona operatsiyalari va workflow
-
-Agar savol qahvaxona/kofe mavzusidan tashqarida bo'lsa, iltimos faqat qahva bilan bog'liq savollar berishni so'rang.
-
-Javoblaringiz:
-- Professional va amaliy bo'lsin
-- Aniq retsept va yo'riqnomalar bering
-- Emoji ishlatib do'stona bo'ling
-- 2-3 paragrafdan oshmasin"""
-            
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": context},
-                    {"role": "user", "content": question}
-                ],
-                max_tokens=600,
-                temperature=0.7
-            )
-            
-            result = response.choices[0].message.content
-            print("✅ Enhanced coffee AI response generated")
-            return result
-            
-        except Exception as e:
-            print(f"❌ OpenAI chat error: {e}")
-            print("🔄 Using demo responses...")
-    
-    # Fallback to enhanced static responses
-    return get_enhanced_static_coffee_response(question, user_id)
-
-def get_enhanced_static_coffee_response(question, user_id=None):
-    """Enhanced static responses for coffee topics"""
-    question_lower = question.lower()
-    lang = get_user_language(user_id) if user_id else 'uz'
-    
-    coffee_responses = {
-        'uz': {
-            'latte': """🥛 **LATTE PROFESSIONAL RETSEPTI**
-
-☕ **Tarkibi:**
-• 1-2 shot espresso (30-60ml)
-• 150-180ml buglangan sut
-• 1cm sut ko'pigi
-
-📋 **Professional tayyorlash:**
-1. **Espresso:** 18-20g kofe, 25-30 soniya ekstraktsiya
-2. **Sut:** 60-65°C gacha bug'lang (thermometer ishlatamiz)
-3. **Microfoam:** Glossy, paint-like texture
-4. **Quyish:** Steady stream, 3-4cm balandlikdan
-5. **Latte Art:** Heart yoki tulip pattern
-
-💡 **Pro tips:**
-• Fresh sut ishlatamiz (2-3 kun ichida)
-• Steam wand har safar tozalanadi
-• Sut ikki marta bug'lanmaydi
-• Perfect microfoam uchun: swirl + tap technique""",
-
-            'cappuccino': """☕ **CAPPUCCINO MASTERCLASS**
-
-🎯 **Classic nisbat:**
-• 1 shot espresso (30ml)
-• 60ml buglangan sut
-• 60ml sut ko'pigi (dense foam)
-
-⚡ **Tayyorlash texnikasi:**
-1. **Espresso:** Double shot, 25-30 sek
-2. **Foam creation:** Dense, velvety microfoam
-3. **Temperature:** 65-70°C (lip-burning hot)
-4. **Texture:** Thick, creamy consistency
-5. **Presentation:** Ko'pik ustiga cocoa powder
-
-🎨 **Italian style vs Modern:**
-• **Traditional:** Ko'proq foam, kam sut
-• **Modern:** Latte art bilan, microfoam focus
-• **Wet vs Dry:** Mijoz preferensiyasiga qarab""",
-
-            'espresso': """⚡ **PERFECT ESPRESSO GUIDE**
-
-📊 **Golden parameters:**
-• **Kofe:** 18-20g (double shot)
-• **Vaqt:** 25-30 soniya
-• **Hajm:** 36-40ml output
-• **Bosim:** 9 bar
-• **Harorat:** 92-96°C
-
-🔧 **Texnika:**
-1. **Grind:** Fine, hali powder emas
-2. **Dose:** Scales bilan aniq o'lchang
-3. **Distribution:** WDT yoki finger leveling
-4. **Tamping:** 15-20kg bosim, level surface
-5. **Timing:** Extraction vaqtini kuzating
-
-❌ **Xatolar va yechimlar:**
-• **Sour/Under:** Grind finer, vaqt uzaytiring
-• **Bitter/Over:** Grind coarser, vaqt qisqartiring
-• **Channeling:** Distribution yaxshilang""",
-
-            'milk_steaming': """🥛 **PROFESSIONAL MILK STEAMING**
-
-🌡️ **Temperature zones:**
-• **Start:** Room temperature (4-6°C)
-• **Finish:** 60-65°C (hand test: 3 soniya ushlab turolasiz)
-• **Limit:** 70°C dan oshmang (protein buziladi)
-
-🎯 **Steaming technique:**
-1. **Position:** Steam wand surface yaqinida
-2. **Stretching phase:** 0-5 soniya, havo qo'shamiz
-3. **Heating phase:** 5-30 soniya, chuqurroq tiqish
-4. **Texture:** Glossy, paint-like consistency
-
-💡 **Pro secrets:**
-• **Wand angle:** 15-30 daraja
-• **Jug size:** Sut hajmidan 2 barobar katta
-• **Swirling:** Steam tugagach darhol aylantiring
-• **Tap technique:** Bubbles integration uchun""",
-
-            'coffee_beans': """🫘 **KOFE DONLARI HAQIDA**
-
-🌍 **Origin characteristics:**
-• **Ethiopia:** Floral, fruity notes
-• **Colombia:** Balanced, nutty-chocolate
-• **Brazil:** Nutty, low acidity
-• **Guatemala:** Full body, spicy notes
-
-🔥 **Roast levels:**
-• **Light:** Bright, acidic, origin flavors
-• **Medium:** Balanced, caramelized notes
-• **Dark:** Bold, bitter, less origin character
-
-📅 **Freshness rules:**
-• **Optimal:** 7-21 kun roast qilinganidan keyin
-• **Grind:** Ishlatishdan 30 daqiqa oldin
-• **Storage:** Cool, dry place, airtight container
-• **Avoid:** Freezer, direct sunlight, moisture""",
-
-            'not_coffee': "❌ Kechirasiz, men faqat qahvaxona va kofe mavzularida yordam bera olaman. ☕\n\nQuyidagi mavzularda savol bering:\n• Kofe tayyorlash usullari\n• Latte art texnikalari\n• Espresso sozlamalari\n• Sut ishlash\n• Qahvaxona jihozlari\n\nQahva bilan bog'liq savolingiz bormi? 😊"
-        }
-    }
-    
-    responses = coffee_responses.get(lang, coffee_responses['uz'])
-    
-    # Check for coffee-related keywords
-coffee_keywords = [
-    'latte', 'cappuccino', 'espresso', 'kofe', 'coffee', 'sut', 'milk',
-    'bean', 'don', 'steam', 'bug', 'art', 'foam', 'barista', 'grind',
-    'extraction', 'shot', 'crema', 'roast', 'arabica', 'robusta',
-    'origin', 'blend', 'pour', 'tamping', 'dosing'
-]
+        print(f"❌ Startup error: {e}")
