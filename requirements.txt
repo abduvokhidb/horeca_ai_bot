@@ -1,6 +1,12 @@
-python-telegram-bot==20.6
-httpx==0.27.0
-beautifulsoup4==4.12.3
-easyocr==1.7.1
-Pillow==10.3.0
-python-dotenv==1.0.1
+python-telegram-bot==21.5
+python-dotenv==1.0.0
+httpx~=0.27
+pytz==2024.1
+flask==2.3.3
+openai==1.12.0
+requests==2.32.3
+beautifulsoup4==4.12.2
+schedule==1.2.0
+# OCR libraries (optional)
+pytesseract==0.3.10
+Pillow==10.4.0
