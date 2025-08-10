@@ -1,167 +1,92 @@
-import os, re, time
-from typing import List, Dict, Tuple
+# source_quqon.py
+import os
+import re
+import tempfile
 import httpx
+import easyocr
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from PIL import Image
+from io import BytesIO
 
 load_dotenv()
 
-# Sozlamalar
-CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/s/namozvaqtitest")
-TTL = 60 * 60 * 6  # 6 soat cache
-UA = {"user-agent": "Mozilla/5.0 (PrayerTimesBot/1.0)"}
+CHANNEL_URL = os.getenv("CHANNEL_URL")
+if not CHANNEL_URL:
+    raise RuntimeError("CHANNEL_URL .env faylda ko‘rsatilmagan")
 
-# Cache
-CACHE: Dict[str, Dict] = {}
+# OCR initial
+ocr_reader = easyocr.Reader(['en', 'ru', 'ar'], gpu=False)
 
-# Vaqt patternlari
-TIME_TOKEN = r'([0-2]?\d)\s*[:٫：]\s*([0-5]\d)'
-TIME_RE = re.compile(TIME_TOKEN)
+def fetch_channel_posts(limit=10):
+    """Telegram kanalini (t.me/s/<kanal>) yuklab olish."""
+    r = httpx.get(CHANNEL_URL, timeout=20)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    posts = soup.select(".tgme_widget_message")
+    return posts[:limit]
 
-# 3 alifbo: Lotin/Kiril/Arab sinonimlari
-LABELS = {
-    "bomdod": r'(Бомдод|Bomdod|Tong|الفجر|فجر|Fajr)',
-    "peshin": r'(Пешин|Peshin|Tush|الظهر|ظهر|Dhuhr|Zuhr)',
-    "asr":    r'(Аср|Asr|العصر|عصر)',
-    "shom":   r'(Шом|Shom|Iftor|المغرب|مغرب|Maghrib)',
-    "xufton": r'(Хуфтон|Xufton|Isha|العشاء|عشاء)'
-}
-
-MASJID_HINT = re.compile(r'(масжиди|masjidi|masjid|jome|jom[eai]|мечеть|mosque|جام[ع]|مسجد)', re.I)
-
-# ------------ Transport ------------
-def _get(url: str, timeout=40) -> str:
-    with httpx.Client(timeout=timeout, headers=UA) as c:
-        r = c.get(url)
-        r.raise_for_status()
-        return r.text
-
-def _get_bytes(url: str, timeout=60) -> bytes:
-    with httpx.Client(timeout=timeout, headers=UA) as c:
-        r = c.get(url)
-        r.raise_for_status()
-        return r.content
-
-# ------------ HTML helpers ------------
-def _extract_posts(soup: BeautifulSoup):
-    return soup.select(".tgme_widget_message_bubble")
-
-def _post_text(post) -> str:
-    el = post.select_one(".tgme_widget_message_text")
-    return el.get_text("\n", strip=True) if el else ""
-
-def _post_images(post) -> List[str]:
-    urls = []
-    a = post.select_one(".tgme_widget_message_photo_wrap")
-    if a and a.get("href"):
-        urls.append(a["href"])
-    img = post.select_one("img.tgme_widget_message_photo")
-    if img and img.get("src"):
-        urls.append(img["src"])
-    return urls
-
-# ------------ Parsing ------------
-def _normalize_time(text: str) -> str:
-    m = TIME_RE.search(text)
-    if not m:
-        return ""
-    h = int(m.group(1)); mi = int(m.group(2))
-    return f"{h:02d}:{mi:02d}"
-
-def _times_from_text(txt: str) -> Dict[str, str]:
-    def pick(lbl_pat):
-        m = re.search(rf'{lbl_pat}[^\d\n]*{TIME_TOKEN}', txt, re.I)
-        return _normalize_time(m.group(0)) if m else ""
-    return {k: pick(v) for k, v in LABELS.items()}
-
-def _masjid_name(lines: List[str]) -> str:
-    for l in lines[:4]:
-        if MASJID_HINT.search(l):
-            return re.sub(r'#\S+','', l).strip()
-    for l in lines:
-        if len(l.strip()) >= 3:
-            return re.sub(r'#\S+','', l).strip()
-    return "Masjid"
-
-# ------------ OCR (fallback) ------------
-try:
-    import numpy as np
-    from PIL import Image
-    from io import BytesIO
-    import easyocr
-    _ocr_reader = easyocr.Reader(['ru', 'en', 'ar'], gpu=False)
-except Exception:
-    _ocr_reader = None
-
-def _ocr_from_bytes(b: bytes) -> str:
-    if _ocr_reader is None:
-        return ""
-    try:
-        im = Image.open(BytesIO(b)).convert("RGB")
-        arr = np.array(im)
-        res = _ocr_reader.readtext(arr, detail=0, paragraph=True)
-        return "\n".join(res) if res else ""
-    except Exception:
-        return ""
-
-def _enhance_with_ocr_if_needed(post, base_txt: str) -> Tuple[str, Dict[str, str]]:
-    times = _times_from_text(base_txt)
-    if sum(1 for v in times.values() if v) >= 3:
-        return base_txt, times
-    for u in _post_images(post):
-        b = _get_bytes(u)
-        ocr_txt = _ocr_from_bytes(b)
-        if not ocr_txt:
-            continue
-        t2 = _times_from_text(ocr_txt)
-        if sum(1 for v in t2.values() if v) >= 3:
-            txt2 = (base_txt + "\n\n" + ocr_txt).strip() if base_txt else ocr_txt
-            return txt2, t2
-    return base_txt, times
-
-# ------------ Public API ------------
-def get_latest_table() -> List[Dict[str, str]]:
+def parse_text_times(text):
     """
-    Kanaldagi eng so‘nggi postlardan namoz vaqtlarini chiqaradi.
-    Natija: [{masjid, bomdod, peshin, asr, shom, xufton}, ...]
+    Matndan masjid nomi va vaqtlarni ajratib olish.
+    Uch alifbo: lotin, kiril, arab.
     """
-    now = time.time()
-    if "latest" in CACHE and now - CACHE["latest"]["ts"] < TTL:
-        return CACHE["latest"]["data"]
-
-    html_text = _get(CHANNEL_URL)
-    soup = BeautifulSoup(html_text, "html.parser")
-    posts = _extract_posts(soup)
-
-    rows: List[Dict[str, str]] = []
-    for p in posts[::-1]:  # eski->yangi; t.me/s da eng yangilari pastda
-        txt = _post_text(p) or ""
-        if not re.search(r'(Бомдод|Bomdod|Tong|الفجر|فجر|Fajr|Пешин|Peshin|Tush|الظهر|ظهر|Dhuhr|Zuhr|Аср|Asr|العصر|عصر|Шом|Shom|Iftor|المغرب|مغرب|Maghrib|Хуфтон|Xufton|Isha|العشاء|عشاء)', txt, re.I):
-            if not _post_images(p):
-                continue
-        txt2, times = _enhance_with_ocr_if_needed(p, txt)
-        if sum(1 for v in times.values() if v) < 3:
-            continue
-
-        lines = [l for l in (txt2 or txt).splitlines() if l.strip()]
-        masjid = _masjid_name(lines)
-
-        rows.append({
-            "masjid": masjid,
-            "bomdod": times.get("bomdod", ""),
-            "peshin": times.get("peshin", ""),
-            "asr":    times.get("asr", ""),
-            "shom":   times.get("shom", ""),
-            "xufton": times.get("xufton", "")
-        })
-
-    CACHE["latest"] = {"ts": now, "data": rows}
+    rows = []
+    lines = text.split("\n")
+    for line in lines:
+        parts = re.split(r"\s{2,}|\t", line.strip())
+        if len(parts) >= 2:
+            masjid = parts[0].strip()
+            vaqtlar = [p.strip() for p in parts[1:] if re.match(r"\d{1,2}:\d{2}", p)]
+            if masjid and vaqtlar:
+                rows.append({"masjid": masjid, "vaqtlar": vaqtlar})
     return rows
 
-def to_text_table(rows: List[Dict[str, str]]) -> str:
-    header = "Masjid | Bomdod | Peshin | Asr | Shom | Xufton"
-    sep    = "------ | ------- | ------ | --- | ---- | ------"
-    out = [header, sep]
+def ocr_image_times(image_bytes):
+    """Rasmdan OCR orqali vaqtlarni o‘qish."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+    try:
+        result = ocr_reader.readtext(tmp_path, detail=0)
+        text = "\n".join(result)
+        return parse_text_times(text)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def get_latest_table():
+    """
+    Kanaldagi eng so‘nggi postlardan jadval olish.
+    Avval matndan, bo‘lmasa rasm OCR’dan.
+    """
+    posts = fetch_channel_posts(limit=10)
+    all_rows = []
+    for post in posts:
+        # Matnli qismi
+        text_block = post.select_one(".tgme_widget_message_text")
+        if text_block:
+            rows = parse_text_times(text_block.get_text("\n"))
+            if rows:
+                all_rows.extend(rows)
+                continue
+        # Rasmli qismi
+        img_tag = post.select_one("a.tgme_widget_message_photo_wrap")
+        if img_tag and 'style' in img_tag.attrs:
+            style = img_tag['style']
+            match = re.search(r"url\('(.*?)'\)", style)
+            if match:
+                img_url = match.group(1)
+                img_data = httpx.get(img_url, timeout=20).content
+                rows = ocr_image_times(img_data)
+                if rows:
+                    all_rows.extend(rows)
+    return all_rows
+
+def to_text_table(rows):
+    """Natijani matnli jadvalga aylantirish."""
+    lines = []
     for r in rows:
-        out.append(f"{r['masjid']} | {r['bomdod']} | {r['peshin']} | {r['asr']} | {r['shom']} | {r['xufton']}")
-    return "\n".join(out)
+        line = f"{r['masjid']}: " + ", ".join(r['vaqtlar'])
+        lines.append(line)
+    return "\n".join(lines)
