@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Config
+# Sozlamalar
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/s/namozvaqtitest")
 TTL = 60 * 60 * 6  # 6 soat cache
 UA = {"user-agent": "Mozilla/5.0 (PrayerTimesBot/1.0)"}
@@ -18,7 +18,7 @@ CACHE: Dict[str, Dict] = {}
 TIME_TOKEN = r'([0-2]?\d)\s*[:٫：]\s*([0-5]\d)'
 TIME_RE = re.compile(TIME_TOKEN)
 
-# 3 alifbo bo‘yicha sinonimlar
+# 3 alifbo: Lotin/Kiril/Arab sinonimlari
 LABELS = {
     "bomdod": r'(Бомдод|Bomdod|Tong|الفجر|فجر|Fajr)',
     "peshin": r'(Пешин|Peshin|Tush|الظهر|ظهر|Dhuhr|Zuhr)',
@@ -27,10 +27,9 @@ LABELS = {
     "xufton": r'(Хуфтон|Xufton|Isha|العشاء|عشاء)'
 }
 
-# Masjid nomlarini aniqlashga yordam beruvchi kalitlar
 MASJID_HINT = re.compile(r'(масжиди|masjidi|masjid|jome|jom[eai]|мечеть|mosque|جام[ع]|مسجد)', re.I)
 
-# ---------- Transport ----------
+# ------------ Transport ------------
 def _get(url: str, timeout=40) -> str:
     with httpx.Client(timeout=timeout, headers=UA) as c:
         r = c.get(url)
@@ -43,7 +42,7 @@ def _get_bytes(url: str, timeout=60) -> bytes:
         r.raise_for_status()
         return r.content
 
-# ---------- HTML helpers ----------
+# ------------ HTML helpers ------------
 def _extract_posts(soup: BeautifulSoup):
     return soup.select(".tgme_widget_message_bubble")
 
@@ -61,7 +60,7 @@ def _post_images(post) -> List[str]:
         urls.append(img["src"])
     return urls
 
-# ---------- Parsing ----------
+# ------------ Parsing ------------
 def _normalize_time(text: str) -> str:
     m = TIME_RE.search(text)
     if not m:
@@ -84,8 +83,7 @@ def _masjid_name(lines: List[str]) -> str:
             return re.sub(r'#\S+','', l).strip()
     return "Masjid"
 
-# ---------- OCR (fallback) ----------
-# EasyOCR: ru (Kiril), en (Lotin), ar (Arabic)
+# ------------ OCR (fallback) ------------
 try:
     import numpy as np
     from PIL import Image
@@ -110,8 +108,6 @@ def _enhance_with_ocr_if_needed(post, base_txt: str) -> Tuple[str, Dict[str, str
     times = _times_from_text(base_txt)
     if sum(1 for v in times.values() if v) >= 3:
         return base_txt, times
-
-    # Matndan topilmadi -> rasmlarni tekshiramiz
     for u in _post_images(post):
         b = _get_bytes(u)
         ocr_txt = _ocr_from_bytes(b)
@@ -123,9 +119,10 @@ def _enhance_with_ocr_if_needed(post, base_txt: str) -> Tuple[str, Dict[str, str
             return txt2, t2
     return base_txt, times
 
-# ---------- Public API ----------
+# ------------ Public API ------------
 def get_latest_table() -> List[Dict[str, str]]:
-    """Kanaldagi eng so'nggi postlardan namoz vaqtlarini chiqaradi.
+    """
+    Kanaldagi eng so‘nggi postlardan namoz vaqtlarini chiqaradi.
     Natija: [{masjid, bomdod, peshin, asr, shom, xufton}, ...]
     """
     now = time.time()
@@ -137,15 +134,11 @@ def get_latest_table() -> List[Dict[str, str]]:
     posts = _extract_posts(soup)
 
     rows: List[Dict[str, str]] = []
-
-    # Eski -> yangi (t.me/s da), oxiridagilar eng yangilari, teskari yuramiz
-    for p in posts[::-1]:
+    for p in posts[::-1]:  # eski->yangi; t.me/s da eng yangilari pastda
         txt = _post_text(p) or ""
-        # Trigger so'zlar (Lotin/Kiril/Arab). Agar matn bo'lmasa ham OCR sinab ko'ramiz.
         if not re.search(r'(Бомдод|Bomdod|Tong|الفجر|فجر|Fajr|Пешин|Peshin|Tush|الظهر|ظهر|Dhuhr|Zuhr|Аср|Asr|العصر|عصر|Шом|Shom|Iftor|المغرب|مغرب|Maghrib|Хуфтон|Xufton|Isha|العشاء|عشاء)', txt, re.I):
             if not _post_images(p):
                 continue
-        # OCR fallback
         txt2, times = _enhance_with_ocr_if_needed(p, txt)
         if sum(1 for v in times.values() if v) < 3:
             continue
