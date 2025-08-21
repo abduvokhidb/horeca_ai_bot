@@ -1,1259 +1,1734 @@
-import os
-import json
-import asyncio
 import logging
-import threading
-import math
-import re
-import requests
+import json
+import os
 from datetime import datetime, timedelta
-import pytz
-from typing import Dict, List, Set, Optional
-from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.constants import ParseMode
-from bs4 import BeautifulSoup
-import time
-from difflib import SequenceMatcher
-import hashlib
-from collections import defaultdict, Counter
+from typing import Dict, List, Optional, Tuple
+from enum import Enum
 
-# OCR uchun (agar mavjud bo'lsa)
-try:
-    import pytesseract
-    from PIL import Image
-    import io
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
-    print("⚠️ OCR kutubxonalari o'rnatilmagan. Faqat matn tahlili faol.")
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    ParseMode,
+    CallbackQuery
+)
+from telegram.ext import (
+    Updater, 
+    CommandHandler, 
+    CallbackQueryHandler, 
+    MessageHandler, 
+    Filters, 
+    ConversationHandler, 
+    CallbackContext
+)
 
-# Flask Health Check
-app = Flask(__name__)
-
-@app.route('/health')
-def health():
-    return {'status': 'Bot ishlaydi', 'timestamp': datetime.now().isoformat()}, 200
-
-@app.route('/')
-def home():
-    return {'service': 'Qoqon Masjidlar Bot', 'admin': 'menadminman', 'features': ['3-alifbo', 'OCR', 'Real-time']}, 200
-
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
-
-# Logging setup
+# Logging sozlamalari
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ========================================
-# CONFIGURATION VA ENVIRONMENT VARIABLES
-# ========================================
+# Bot Token (O'zingizning tokeningizni qo'ying)
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')  # Opsional
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', 'quqonnamozvaqti')
+# Ma'lumotlar fayli
+DATA_FILE = 'bot_data.json'
 
-# Test mode
-TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
-if TEST_MODE:
-    test_channel = os.getenv('TEST_CHANNEL_USERNAME', 'namozvaqtitest')
-    CHANNEL_USERNAME = test_channel
-    logger.info(f"🧪 TEST MODE: @{CHANNEL_USERNAME}")
+# Conversation states
+(WAITING_TASK_TITLE, WAITING_TASK_DESC, WAITING_TASK_DEADLINE, 
+ WAITING_TASK_ASSIGNEE, WAITING_PROJECT_NAME, WAITING_PROJECT_DESC,
+ WAITING_TEAM_NAME, WAITING_TEAM_DESC, WAITING_FEEDBACK) = range(9)
 
-CHANNEL_URL = f'https://t.me/s/{CHANNEL_USERNAME}'
+# Task Status
+class TaskStatus(Enum):
+    TODO = "TODO"
+    IN_PROGRESS = "IN_PROGRESS"
+    REVIEW = "REVIEW"
+    DONE = "DONE"
+    CANCELLED = "CANCELLED"
 
-# Environment validation
-if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN environment variable majburiy!")
-    exit(1)
+# Task Priority
+class TaskPriority(Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
 
-logger.info(f"🎯 Monitoring kanal: @{CHANNEL_USERNAME}")
-logger.info(f"🌐 Kanal URL: {CHANNEL_URL}")
-logger.info(f"🖼️ OCR: {'✅ Faol' if OCR_AVAILABLE else '❌ Faol emas'}")
-
-# ========================================
-# ADMIN PANEL TIZIMI
-# ========================================
-
-ADMIN_PASSWORD = "menadminman"
-admin_sessions = set()
-admin_temp_data = {}
-
-# Analytics va statistika
-user_activity = defaultdict(int)
-user_join_dates = {}
-user_last_activity = {}
-masjid_popularity = defaultdict(int)
-daily_stats = defaultdict(lambda: defaultdict(int))
-push_notification_stats = defaultdict(int)
-
-def log_user_activity(user_id: str, action: str):
-    """Foydalanuvchi faolligini log qilish"""
-    user_activity[user_id] += 1
-    user_last_activity[user_id] = datetime.now()
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    daily_stats[today]['total_actions'] += 1
-    daily_stats[today][action] += 1
-
-def log_user_join(user_id: str):
-    """Yangi foydalanuvchi qo'shilishini log qilish"""
-    if user_id not in user_join_dates:
-        user_join_dates[user_id] = datetime.now()
-        today = datetime.now().strftime('%Y-%m-%d')
-        daily_stats[today]['new_users'] += 1
-        logger.info(f"👤 Yangi foydalanuvchi: {user_id}")
-
-def log_masjid_selection(user_id: str, selected_masjids: List[str]):
-    """Masjid tanlanishini log qilish"""
-    for masjid_key in selected_masjids:
-        masjid_popularity[masjid_key] += 1
-
-def is_admin(user_id: str) -> bool:
-    """Admin ekanligini tekshirish"""
-    return str(user_id) in admin_sessions
-
-# ========================================
-# MASJIDLAR VA PATTERN MATCHING TIZIMI
-# ========================================
-
-MASJIDLAR_3_ALIFBO = {
-    "NORBUTABEK": {
-        "full_name": "NORBUTABEK JOME MASJIDI",
-        "coordinates": [40.3925, 71.7412],
-        "patterns": {
-            "lotin": ["norbutabek", "norbu tabek", "norbu-tabek", "norbutabek jome", "norbutabek masjid"],
-            "kiril": ["норбутабек", "норбу табек", "норбу-табек", "норбутабек жоме", "норбутабек масжид"],
-            "arab": ["نوربوتابيك", "نوربو تابيك", "مسجد نوربوتابيك"]
-        },
-        "created_date": "2025-01-01",
-        "last_updated": datetime.now().strftime('%Y-%m-%d')
+# Ko'p tillilik - 3 ta til: O'zbek, Rus, Qozoq
+LANGUAGES = {
+    'uz': {
+        'name': '🇺🇿 O\'zbek',
+        'flag': '🇺🇿',
+        'welcome': '👋 Xush kelibsiz!\n\nMen Task Management Bot - vazifalar va loyihalarni boshqarish uchun yordamchingiz.',
+        'choose_action': '📋 Kerakli amalni tanlang:',
+        'main_menu': '🏠 Asosiy menyu',
+        'my_tasks': '📋 Mening vazifalarim',
+        'new_task': '➕ Yangi vazifa',
+        'projects': '📁 Loyihalar',
+        'new_project': '➕ Yangi loyiha',
+        'teams': '👥 Jamoalar',
+        'new_team': '➕ Yangi jamoa',
+        'calendar': '📅 Kalendar',
+        'today_tasks': '📌 Bugungi vazifalar',
+        'reports': '📊 Hisobotlar',
+        'notifications': '🔔 Bildirishnomalar',
+        'settings': '⚙️ Sozlamalar',
+        'help': '❓ Yordam',
+        'back': '◀️ Orqaga',
+        'cancel': '❌ Bekor qilish',
+        'done': '✅ Tayyor',
+        'edit': '✏️ Tahrirlash',
+        'delete': '🗑 O\'chirish',
+        'language': '🌐 Til',
+        'choose_language': '🌐 Tilni tanlang:',
+        'language_changed': '✅ Til muvaffaqiyatli o\'zgartirildi!',
+        'enter_task_title': '📝 Vazifa nomini kiriting:',
+        'enter_task_desc': '📄 Vazifa tavsifini kiriting (yoki /skip):',
+        'enter_deadline': '📅 Muddatni kiriting (kun.oy.yil formatida yoki /skip):',
+        'task_created': '✅ Vazifa muvaffaqiyatli yaratildi!',
+        'no_tasks': '📭 Hozircha vazifalar yo\'q',
+        'select_task': '📋 Vazifani tanlang:',
+        'task_details': '📋 Vazifa tafsilotlari',
+        'status': '📊 Status',
+        'priority': '⚡ Muhimlik',
+        'deadline': '📅 Muddat',
+        'description': '📝 Tavsif',
+        'created_date': '🕐 Yaratilgan',
+        'assigned_to': '👤 Mas\'ul',
+        'change_status': '🔄 Statusni o\'zgartirish',
+        'change_priority': '⚡ Muhimlikni o\'zgartirish',
+        'assign_user': '👤 Mas\'ul tayinlash',
+        'task_updated': '✅ Vazifa yangilandi!',
+        'task_deleted': '✅ Vazifa o\'chirildi!',
+        'confirm_delete': '❓ Vazifani o\'chirishni tasdiqlaysizmi?',
+        'yes': '✅ Ha',
+        'no': '❌ Yo\'q',
+        'search': '🔍 Qidirish',
+        'filter': '🎯 Filtr',
+        'sort': '↕️ Saralash',
+        'statistics': '📈 Statistika',
+        'export': '📤 Export',
+        'import': '📥 Import',
+        'profile': '👤 Profil',
+        'logout': '🚪 Chiqish',
+        'about': 'ℹ️ Bot haqida',
+        'contact_admin': '💬 Admin bilan bog\'lanish',
+        'rate_bot': '⭐ Botni baholash',
+        'share': '📢 Ulashish',
+        'status_todo': '📝 Bajarilishi kerak',
+        'status_in_progress': '🔄 Jarayonda',
+        'status_review': '👀 Tekshirilmoqda',
+        'status_done': '✅ Bajarildi',
+        'status_cancelled': '❌ Bekor qilindi',
+        'priority_low': '🟢 Past',
+        'priority_medium': '🟡 O\'rta',
+        'priority_high': '🔴 Yuqori',
+        'priority_urgent': '🚨 Shoshilinch',
+        'daily_report': '📊 Kunlik hisobot',
+        'weekly_report': '📊 Haftalik hisobot',
+        'monthly_report': '📊 Oylik hisobot',
+        'no_projects': '📭 Loyihalar yo\'q',
+        'project_created': '✅ Loyiha yaratildi!',
+        'select_project': '📁 Loyihani tanlang:',
+        'project_details': '📁 Loyiha tafsilotlari',
+        'add_to_project': '📎 Loyihaga qo\'shish',
+        'remove_from_project': '📎 Loyihadan chiqarish',
+        'team_members': '👥 Jamoa a\'zolari',
+        'add_member': '➕ A\'zo qo\'shish',
+        'remove_member': '➖ A\'zoni chiqarish',
+        'member_added': '✅ A\'zo qo\'shildi!',
+        'member_removed': '✅ A\'zo chiqarildi!',
+        'notifications_on': '🔔 Bildirishnomalar yoqilgan',
+        'notifications_off': '🔕 Bildirishnomalar o\'chirilgan',
+        'reminder_set': '⏰ Eslatma o\'rnatildi!',
+        'search_results': '🔍 Qidiruv natijalari',
+        'no_results': '❌ Hech narsa topilmadi',
+        'loading': '⏳ Yuklanmoqda...',
+        'error': '❌ Xatolik yuz berdi!',
+        'success': '✅ Muvaffaqiyatli!',
+        'warning': '⚠️ Diqqat!',
+        'info': 'ℹ️ Ma\'lumot',
+        'confirm': '❓ Tasdiqlaysizmi?',
+        'enter_project_name': '📝 Loyiha nomini kiriting:',
+        'enter_project_desc': '📄 Loyiha tavsifini kiriting (yoki /skip):',
+        'enter_team_name': '📝 Jamoa nomini kiriting:',
+        'enter_team_desc': '📄 Jamoa tavsifini kiriting (yoki /skip):',
+        'team_created': '✅ Jamoa yaratildi!',
+        'no_teams': '📭 Jamoalar yo\'q',
+        'select_team': '👥 Jamoani tanlang:',
+        'team_details': '👥 Jamoa tafsilotlari',
+        'feedback': '💬 Fikr-mulohaza',
+        'send_feedback': '📝 Fikringizni yuboring:',
+        'feedback_sent': '✅ Fikr-mulohazangiz yuborildi!',
+        'quick_actions': '⚡ Tezkor amallar',
+        'mark_done': '✅ Bajarildi deb belgilash',
+        'postpone': '⏰ Kechiktirish',
+        'duplicate': '📑 Nusxalash',
+        'archive': '📦 Arxivlash',
+        'unarchive': '📤 Arxivdan chiqarish',
+        'pin': '📌 Qadash',
+        'unpin': '📌 Qadashdan olish',
+        'all_tasks': '📋 Barcha vazifalar',
+        'my_created': '✏️ Men yaratganlar',
+        'assigned_to_me': '👤 Menga tayinlanganlar',
+        'high_priority': '🔴 Muhim vazifalar',
+        'overdue': '⏰ Muddati o\'tganlar',
+        'completed': '✅ Bajarilganlar',
+        'upcoming': '📅 Yaqinlashayotganlar',
+        'today': '📌 Bugun',
+        'tomorrow': '📅 Ertaga',
+        'this_week': '📅 Bu hafta',
+        'next_week': '📅 Keyingi hafta',
+        'this_month': '📅 Bu oy',
+        'custom_date': '📅 Boshqa sana'
     },
-    "GISHTLIK": {
-        "full_name": "GISHTLIK JOME MASJIDI",
-        "coordinates": [40.3901, 71.7389],
-        "patterns": {
-            "lotin": ["gishtlik", "g'ishtlik", "gʻishtlik", "gishtlik jome", "gishtlik masjid"],
-            "kiril": ["гиштлик", "ғиштлик", "гиштлик жоме", "гиштлик масжид"],
-            "arab": ["غیشتلیك", "گشتلیك", "مسجد غیشتلیك"]
-        },
-        "created_date": "2025-01-01",
-        "last_updated": datetime.now().strftime('%Y-%m-%d')
+    'ru': {
+        'name': '🇷🇺 Русский',
+        'flag': '🇷🇺',
+        'welcome': '👋 Добро пожаловать!\n\nЯ Task Management Bot - ваш помощник для управления задачами и проектами.',
+        'choose_action': '📋 Выберите действие:',
+        'main_menu': '🏠 Главное меню',
+        'my_tasks': '📋 Мои задачи',
+        'new_task': '➕ Новая задача',
+        'projects': '📁 Проекты',
+        'new_project': '➕ Новый проект',
+        'teams': '👥 Команды',
+        'new_team': '➕ Новая команда',
+        'calendar': '📅 Календарь',
+        'today_tasks': '📌 Задачи на сегодня',
+        'reports': '📊 Отчеты',
+        'notifications': '🔔 Уведомления',
+        'settings': '⚙️ Настройки',
+        'help': '❓ Помощь',
+        'back': '◀️ Назад',
+        'cancel': '❌ Отмена',
+        'done': '✅ Готово',
+        'edit': '✏️ Редактировать',
+        'delete': '🗑 Удалить',
+        'language': '🌐 Язык',
+        'choose_language': '🌐 Выберите язык:',
+        'language_changed': '✅ Язык успешно изменен!',
+        'enter_task_title': '📝 Введите название задачи:',
+        'enter_task_desc': '📄 Введите описание задачи (или /skip):',
+        'enter_deadline': '📅 Введите срок (в формате день.месяц.год или /skip):',
+        'task_created': '✅ Задача успешно создана!',
+        'no_tasks': '📭 Пока нет задач',
+        'select_task': '📋 Выберите задачу:',
+        'task_details': '📋 Детали задачи',
+        'status': '📊 Статус',
+        'priority': '⚡ Приоритет',
+        'deadline': '📅 Срок',
+        'description': '📝 Описание',
+        'created_date': '🕐 Создано',
+        'assigned_to': '👤 Ответственный',
+        'change_status': '🔄 Изменить статус',
+        'change_priority': '⚡ Изменить приоритет',
+        'assign_user': '👤 Назначить ответственного',
+        'task_updated': '✅ Задача обновлена!',
+        'task_deleted': '✅ Задача удалена!',
+        'confirm_delete': '❓ Подтвердите удаление задачи?',
+        'yes': '✅ Да',
+        'no': '❌ Нет',
+        'search': '🔍 Поиск',
+        'filter': '🎯 Фильтр',
+        'sort': '↕️ Сортировка',
+        'statistics': '📈 Статистика',
+        'export': '📤 Экспорт',
+        'import': '📥 Импорт',
+        'profile': '👤 Профиль',
+        'logout': '🚪 Выход',
+        'about': 'ℹ️ О боте',
+        'contact_admin': '💬 Связь с админом',
+        'rate_bot': '⭐ Оценить бота',
+        'share': '📢 Поделиться',
+        'status_todo': '📝 Нужно выполнить',
+        'status_in_progress': '🔄 В процессе',
+        'status_review': '👀 На проверке',
+        'status_done': '✅ Выполнено',
+        'status_cancelled': '❌ Отменено',
+        'priority_low': '🟢 Низкий',
+        'priority_medium': '🟡 Средний',
+        'priority_high': '🔴 Высокий',
+        'priority_urgent': '🚨 Срочный',
+        'daily_report': '📊 Ежедневный отчет',
+        'weekly_report': '📊 Еженедельный отчет',
+        'monthly_report': '📊 Ежемесячный отчет',
+        'no_projects': '📭 Нет проектов',
+        'project_created': '✅ Проект создан!',
+        'select_project': '📁 Выберите проект:',
+        'project_details': '📁 Детали проекта',
+        'add_to_project': '📎 Добавить в проект',
+        'remove_from_project': '📎 Удалить из проекта',
+        'team_members': '👥 Члены команды',
+        'add_member': '➕ Добавить участника',
+        'remove_member': '➖ Удалить участника',
+        'member_added': '✅ Участник добавлен!',
+        'member_removed': '✅ Участник удален!',
+        'notifications_on': '🔔 Уведомления включены',
+        'notifications_off': '🔕 Уведомления выключены',
+        'reminder_set': '⏰ Напоминание установлено!',
+        'search_results': '🔍 Результаты поиска',
+        'no_results': '❌ Ничего не найдено',
+        'loading': '⏳ Загрузка...',
+        'error': '❌ Произошла ошибка!',
+        'success': '✅ Успешно!',
+        'warning': '⚠️ Внимание!',
+        'info': 'ℹ️ Информация',
+        'confirm': '❓ Подтвердить?',
+        'enter_project_name': '📝 Введите название проекта:',
+        'enter_project_desc': '📄 Введите описание проекта (или /skip):',
+        'enter_team_name': '📝 Введите название команды:',
+        'enter_team_desc': '📄 Введите описание команды (или /skip):',
+        'team_created': '✅ Команда создана!',
+        'no_teams': '📭 Нет команд',
+        'select_team': '👥 Выберите команду:',
+        'team_details': '👥 Детали команды',
+        'feedback': '💬 Обратная связь',
+        'send_feedback': '📝 Отправьте ваш отзыв:',
+        'feedback_sent': '✅ Ваш отзыв отправлен!',
+        'quick_actions': '⚡ Быстрые действия',
+        'mark_done': '✅ Отметить выполненным',
+        'postpone': '⏰ Отложить',
+        'duplicate': '📑 Дублировать',
+        'archive': '📦 Архивировать',
+        'unarchive': '📤 Разархивировать',
+        'pin': '📌 Закрепить',
+        'unpin': '📌 Открепить',
+        'all_tasks': '📋 Все задачи',
+        'my_created': '✏️ Созданные мной',
+        'assigned_to_me': '👤 Назначенные мне',
+        'high_priority': '🔴 Важные задачи',
+        'overdue': '⏰ Просроченные',
+        'completed': '✅ Выполненные',
+        'upcoming': '📅 Предстоящие',
+        'today': '📌 Сегодня',
+        'tomorrow': '📅 Завтра',
+        'this_week': '📅 Эта неделя',
+        'next_week': '📅 Следующая неделя',
+        'this_month': '📅 Этот месяц',
+        'custom_date': '📅 Другая дата'
     },
-    "SHAYXULISLOM": {
-        "full_name": "SHAYXULISLOM JOME MASJIDI",
-        "coordinates": [40.3867, 71.7435],
-        "patterns": {
-            "lotin": ["shayxulislom", "shayx ul islom", "shaykh ul islam", "shayxulislom jome"],
-            "kiril": ["шайхулислом", "шайх ул ислом", "шайхулислом жоме"],
-            "arab": ["شیخ الاسلام", "شایخ الاسلام", "مسجد شیخ الاسلام"]
-        },
-        "created_date": "2025-01-01",
-        "last_updated": datetime.now().strftime('%Y-%m-%d')
+    'kk': {
+        'name': '🇰🇿 Қазақша',
+        'flag': '🇰🇿',
+        'welcome': '👋 Қош келдіңіз!\n\nМен Task Management Bot - тапсырмалар мен жобаларды басқару үшін көмекшіңізбін.',
+        'choose_action': '📋 Әрекетті таңдаңыз:',
+        'main_menu': '🏠 Басты мәзір',
+        'my_tasks': '📋 Менің тапсырмаларым',
+        'new_task': '➕ Жаңа тапсырма',
+        'projects': '📁 Жобалар',
+        'new_project': '➕ Жаңа жоба',
+        'teams': '👥 Топтар',
+        'new_team': '➕ Жаңа топ',
+        'calendar': '📅 Күнтізбе',
+        'today_tasks': '📌 Бүгінгі тапсырмалар',
+        'reports': '📊 Есептер',
+        'notifications': '🔔 Хабарландырулар',
+        'settings': '⚙️ Баптаулар',
+        'help': '❓ Көмек',
+        'back': '◀️ Артқа',
+        'cancel': '❌ Болдырмау',
+        'done': '✅ Дайын',
+        'edit': '✏️ Өңдеу',
+        'delete': '🗑 Жою',
+        'language': '🌐 Тіл',
+        'choose_language': '🌐 Тілді таңдаңыз:',
+        'language_changed': '✅ Тіл сәтті өзгертілді!',
+        'enter_task_title': '📝 Тапсырма атауын енгізіңіз:',
+        'enter_task_desc': '📄 Тапсырма сипаттамасын енгізіңіз (немесе /skip):',
+        'enter_deadline': '📅 Мерзімді енгізіңіз (күн.ай.жыл форматында немесе /skip):',
+        'task_created': '✅ Тапсырма сәтті жасалды!',
+        'no_tasks': '📭 Әзірше тапсырмалар жоқ',
+        'select_task': '📋 Тапсырманы таңдаңыз:',
+        'task_details': '📋 Тапсырма мәліметтері',
+        'status': '📊 Мәртебесі',
+        'priority': '⚡ Басымдық',
+        'deadline': '📅 Мерзімі',
+        'description': '📝 Сипаттама',
+        'created_date': '🕐 Жасалған',
+        'assigned_to': '👤 Жауапты',
+        'change_status': '🔄 Мәртебені өзгерту',
+        'change_priority': '⚡ Басымдықты өзгерту',
+        'assign_user': '👤 Жауапты тағайындау',
+        'task_updated': '✅ Тапсырма жаңартылды!',
+        'task_deleted': '✅ Тапсырма жойылды!',
+        'confirm_delete': '❓ Тапсырманы жоюды растайсыз ба?',
+        'yes': '✅ Иә',
+        'no': '❌ Жоқ',
+        'search': '🔍 Іздеу',
+        'filter': '🎯 Сүзгі',
+        'sort': '↕️ Сұрыптау',
+        'statistics': '📈 Статистика',
+        'export': '📤 Экспорт',
+        'import': '📥 Импорт',
+        'profile': '👤 Профиль',
+        'logout': '🚪 Шығу',
+        'about': 'ℹ️ Бот туралы',
+        'contact_admin': '💬 Әкімшімен байланыс',
+        'rate_bot': '⭐ Ботты бағалау',
+        'share': '📢 Бөлісу',
+        'status_todo': '📝 Орындау керек',
+        'status_in_progress': '🔄 Орындалуда',
+        'status_review': '👀 Тексерілуде',
+        'status_done': '✅ Орындалды',
+        'status_cancelled': '❌ Болдырылмады',
+        'priority_low': '🟢 Төмен',
+        'priority_medium': '🟡 Орташа',
+        'priority_high': '🔴 Жоғары',
+        'priority_urgent': '🚨 Шұғыл',
+        'daily_report': '📊 Күндік есеп',
+        'weekly_report': '📊 Апталық есеп',
+        'monthly_report': '📊 Айлық есеп',
+        'no_projects': '📭 Жобалар жоқ',
+        'project_created': '✅ Жоба жасалды!',
+        'select_project': '📁 Жобаны таңдаңыз:',
+        'project_details': '📁 Жоба мәліметтері',
+        'add_to_project': '📎 Жобаға қосу',
+        'remove_from_project': '📎 Жобадан шығару',
+        'team_members': '👥 Топ мүшелері',
+        'add_member': '➕ Мүше қосу',
+        'remove_member': '➖ Мүшені шығару',
+        'member_added': '✅ Мүше қосылды!',
+        'member_removed': '✅ Мүше шығарылды!',
+        'notifications_on': '🔔 Хабарландырулар қосулы',
+        'notifications_off': '🔕 Хабарландырулар өшірулі',
+        'reminder_set': '⏰ Еске салғыш орнатылды!',
+        'search_results': '🔍 Іздеу нәтижелері',
+        'no_results': '❌ Ештеңе табылмады',
+        'loading': '⏳ Жүктелуде...',
+        'error': '❌ Қате пайда болды!',
+        'success': '✅ Сәтті!',
+        'warning': '⚠️ Назар аударыңыз!',
+        'info': 'ℹ️ Ақпарат',
+        'confirm': '❓ Растайсыз ба?',
+        'enter_project_name': '📝 Жоба атауын енгізіңіз:',
+        'enter_project_desc': '📄 Жоба сипаттамасын енгізіңіз (немесе /skip):',
+        'enter_team_name': '📝 Топ атауын енгізіңіз:',
+        'enter_team_desc': '📄 Топ сипаттамасын енгізіңіз (немесе /skip):',
+        'team_created': '✅ Топ жасалды!',
+        'no_teams': '📭 Топтар жоқ',
+        'select_team': '👥 Топты таңдаңыз:',
+        'team_details': '👥 Топ мәліметтері',
+        'feedback': '💬 Кері байланыс',
+        'send_feedback': '📝 Пікіріңізді жіберіңіз:',
+        'feedback_sent': '✅ Пікіріңіз жіберілді!',
+        'quick_actions': '⚡ Жылдам әрекеттер',
+        'mark_done': '✅ Орындалды деп белгілеу',
+        'postpone': '⏰ Кейінге қалдыру',
+        'duplicate': '📑 Көшіру',
+        'archive': '📦 Мұрағаттау',
+        'unarchive': '📤 Мұрағаттан шығару',
+        'pin': '📌 Бекіту',
+        'unpin': '📌 Бекітуден алу',
+        'all_tasks': '📋 Барлық тапсырмалар',
+        'my_created': '✏️ Мен жасағандар',
+        'assigned_to_me': '👤 Маған тағайындалғандар',
+        'high_priority': '🔴 Маңызды тапсырмалар',
+        'overdue': '⏰ Мерзімі өткендер',
+        'completed': '✅ Орындалғандар',
+        'upcoming': '📅 Алдағылар',
+        'today': '📌 Бүгін',
+        'tomorrow': '📅 Ертең',
+        'this_week': '📅 Осы апта',
+        'next_week': '📅 Келесі апта',
+        'this_month': '📅 Осы ай',
+        'custom_date': '📅 Басқа күн'
     }
 }
 
-# Flexible namaz vaqtlari patterns - real telegram formatlar uchun
-NAMAZ_VAQTLARI_PATTERNS = {
-    "lotin": {
-        "bomdod": r'(?:bomdod|fajr|subh|sahar|tong)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "peshin": r'(?:peshin|zuhr|zuhur|öyle|tush)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "asr": r'(?:asr|ikindi|digar)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "shom": r'(?:shom|maghrib|mag\'rib|axshom|kech)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "hufton": r'(?:hufton|isha|xufton|kech|tun)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})'
-    },
-    "kiril": {
-        "bomdod": r'(?:бомдод|фажр|субх|сахар|тонг)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "peshin": r'(?:пешин|зухр|зухур|ойле|туш)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "asr": r'(?:аср|икинди|дигар)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "shom": r'(?:шом|магриб|мағриб|ахшом|кеч)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "hufton": r'(?:хуфтон|иша|кеч|тун)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})'
-    },
-    "arab": {
-        "bomdod": r'(?:فجر|صبح|سحر)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "peshin": r'(?:ظهر|زهر)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "asr": r'(?:عصر)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "shom": r'(?:مغرب|مغریب)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})',
-        "hufton": r'(?:عشاء|عشا|عیشا)\s*[:\-–—.]\s*(\d{1,2})[:\-–—.](\d{2})'
-    }
-}
-
-# Default namaz vaqtlari (backup)
-masjidlar_data = {
-    "NORBUTABEK": {"Bomdod": "04:45", "Peshin": "12:50", "Asr": "17:45", "Shom": "19:35", "Hufton": "21:15"},
-    "GISHTLIK": {"Bomdod": "04:45", "Peshin": "12:50", "Asr": "17:15", "Shom": "19:30", "Hufton": "21:00"},
-    "SHAYXULISLOM": {"Bomdod": "04:45", "Peshin": "12:45", "Asr": "17:35", "Shom": "19:35", "Hufton": "21:15"}
-}
-
-# Global variables
-bot_app = None
-user_settings = {}
-last_posts_hash = {}
-
-# ========================================
-# UTILITY FUNCTIONS
-# ========================================
-
-def similarity(a: str, b: str) -> float:
-    """String similarity"""
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-def detect_script_type(text: str) -> str:
-    """Matnning alifbo turini aniqlash"""
-    arabic_chars = sum(1 for char in text if '\u0600' <= char <= '\u06FF' or '\u0750' <= char <= '\u077F')
-    cyrillic_chars = sum(1 for char in text if '\u0400' <= char <= '\u04FF')
-    latin_chars = sum(1 for char in text if char.isalpha() and char.isascii())
+class DataManager:
+    """Ma'lumotlar bazasi bilan ishlash"""
     
-    total_chars = arabic_chars + cyrillic_chars + latin_chars
-    if total_chars == 0:
-        return "lotin"
+    def __init__(self):
+        self.data = self.load_data()
     
-    if arabic_chars / total_chars > 0.3:
-        return "arab"
-    elif cyrillic_chars / total_chars > 0.3:
-        return "kiril"
-    else:
-        return "lotin"
-
-def clean_text_for_matching(text: str) -> str:
-    """Matnni pattern matching uchun tozalash"""
-    # Emojiler va maxsus belgilarni olib tashlash
-    text = re.sub(r'[🌅☀️🌆🌇🌙📍📅🕐🕌]', '', text)
-    # Qo'shimcha bo'shliqlarni tozalash
-    text = ' '.join(text.split())
-    return text.strip()
-
-def find_mosque_advanced(text: str, threshold: float = 0.6) -> Optional[str]:
-    """Kengaytirilgan masjid qidirish algoritmi"""
-    text = clean_text_for_matching(text)
-    text_lower = text.lower()
-    script_type = detect_script_type(text)
-    
-    logger.info(f"🔍 Masjid qidirilmoqda: '{text}' ({script_type} alifbosi)")
-    
-    best_match = None
-    best_score = 0
-    
-    for mosque_key, mosque_data in MASJIDLAR_3_ALIFBO.items():
-        # Har xil alifboda qidirish
-        for alifbo, patterns in mosque_data["patterns"].items():
-            weight = 1.0 if alifbo == script_type else 0.8
-            
-            for pattern in patterns:
-                # To'g'ridan-to'g'ri mavjudlik
-                if pattern.lower() in text_lower:
-                    logger.info(f"✅ TO'G'RIDAN-TO'G'RI: {mosque_key} pattern '{pattern}' topildi")
-                    return mosque_key
-                
-                # Similarity check
-                score = similarity(text, pattern) * weight
-                if score > threshold and score > best_score:
-                    best_score = score
-                    best_match = mosque_key
-                    logger.info(f"🎯 Similarity match: {mosque_key} pattern '{pattern}' score: {score:.2f}")
+    def load_data(self) -> dict:
+        """Ma'lumotlarni yuklash"""
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
         
-        # Masjid nomining qismlarini alohida tekshirish
-        name_parts = mosque_data["full_name"].lower().replace("jome masjidi", "").split()
-        for part in name_parts:
-            if len(part) > 3 and part in text_lower:
-                logger.info(f"✅ NOM QISMI ORQALI: {mosque_key} part '{part}' topildi")
-                return mosque_key
-    
-    if best_match:
-        logger.info(f"🎯 ENG YAXSHI: {best_match} (score: {best_score:.2f})")
-        return best_match
-    
-    logger.warning(f"❌ Hech qanday masjid topilmadi: '{text}'")
-    return None
-
-def extract_prayer_times_advanced(text: str) -> Dict[str, str]:
-    """Kengaytirilgan namaz vaqtlari ajratish"""
-    prayer_times = {}
-    text_clean = clean_text_for_matching(text)
-    script_type = detect_script_type(text)
-    
-    logger.info(f"🕐 Namaz vaqtlari qidirilmoqda ({script_type}): '{text_clean[:100]}...'")
-    
-    # Barcha alifbolarda qidirish
-    for alifbo, patterns in NAMAZ_VAQTLARI_PATTERNS.items():
-        for prayer_name, pattern in patterns.items():
-            if prayer_name.capitalize() not in prayer_times:
-                matches = re.findall(pattern, text_clean, re.IGNORECASE | re.UNICODE)
-                if matches:
-                    if len(matches[0]) == 2:  # (hour, minute) tuple
-                        hour, minute = matches[0]
-                        time_str = f"{hour.zfill(2)}:{minute.zfill(2)}"
-                    else:
-                        time_str = matches[0]
-                    
-                    prayer_key = prayer_name.capitalize()
-                    prayer_times[prayer_key] = time_str
-                    logger.info(f"    ✅ {prayer_key}: {time_str} ({alifbo})")
-    
-    # Fallback: oddiy raqamlar qidirish
-    if not prayer_times:
-        simple_times = re.findall(r'(\d{1,2})[:\-.](\d{2})', text_clean)
-        if len(simple_times) >= 5:
-            prayer_names = ["Bomdod", "Peshin", "Asr", "Shom", "Hufton"]
-            for i, (hour, minute) in enumerate(simple_times[:5]):
-                prayer_times[prayer_names[i]] = f"{hour.zfill(2)}:{minute.zfill(2)}"
-                logger.info(f"    🔄 FALLBACK {prayer_names[i]}: {hour}:{minute}")
-    
-    return prayer_times
-
-# ========================================
-# OCR VA RASM TAHLILI
-# ========================================
-
-async def process_image_ocr(image_url: str) -> str:
-    """Rasmdan OCR orqali matn olish"""
-    if not OCR_AVAILABLE:
-        logger.warning("⚠️ OCR kutubxonalari yo'q")
-        return ""
-    
-    try:
-        logger.info(f"🖼️ OCR boshlandi: {image_url}")
-        
-        # Rasmni yuklash
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        return {
+            'users': {},
+            'tasks': {},
+            'projects': {},
+            'teams': {},
+            'task_counter': 0,
+            'project_counter': 0,
+            'team_counter': 0
         }
-        response = requests.get(image_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        # PIL Image
-        image = Image.open(io.BytesIO(response.content))
-        
-        # OCR with multiple languages
-        ocr_text = pytesseract.image_to_string(
-            image, 
-            lang='uzb+rus+ara+eng',
-            config='--psm 6 --oem 3'
-        )
-        
-        logger.info(f"📖 OCR natija ({len(ocr_text)} belgi): {ocr_text[:200]}...")
-        return ocr_text
-        
-    except Exception as e:
-        logger.error(f"❌ OCR xatolik: {e}")
-        return ""
-
-# ========================================
-# TELEGRAM CHANNEL MONITORING
-# ========================================
-
-async def scrape_telegram_channel():
-    """Telegram kanalini scraping qilish"""
-    global last_posts_hash
     
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-        }
-        
-        logger.info(f"🌐 Kanal tekshirilmoqda: {CHANNEL_URL}")
-        
-        response = requests.get(CHANNEL_URL, headers=headers, timeout=20)
-        response.raise_for_status()
-        
-        logger.info(f"📥 Response: {response.status_code}, Length: {len(response.content)}")
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Telegram post'larini topish - turli selector'lar
-        posts = soup.find_all('div', class_='tgme_widget_message')
-        if not posts:
-            # Alternative selectors
-            posts = soup.find_all('div', attrs={'data-post': True})
-        
-        if not posts:
-            logger.warning("⚠️ Hech qanday post topilmadi")
-            logger.info(f"HTML snippet: {str(soup)[:500]}...")
-            return
-        
-        logger.info(f"📥 {len(posts)} ta post topildi")
-        
-        # Eng yangi 3 ta postni tekshirish
-        for post in posts[-3:]:
-            await process_telegram_post(post)
-            
-    except Exception as e:
-        logger.error(f"❌ Kanal scraping xatolik: {e}")
-
-async def process_telegram_post(post):
-    """Telegram postni to'liq tahlil qilish"""
-    try:
-        # Post ID
-        post_link = post.find('a', class_='tgme_widget_message_date')
-        if not post_link:
-            post_link = post.find('a', attrs={'href': True})
-        post_id = post_link.get('href', '').split('/')[-1] if post_link else 'unknown'
-        
-        # Hash check (dublikatlarni oldini olish)
-        post_content = str(post)
-        post_hash = hashlib.md5(post_content.encode()).hexdigest()
-        
-        if post_id in last_posts_hash and last_posts_hash[post_id] == post_hash:
-            return
-        
-        last_posts_hash[post_id] = post_hash
-        logger.info(f"📋 Yangi post tahlil qilinmoqda: {post_id}")
-        
-        all_text = ""
-        
-        # 1. TEXT CONTENT
-        text_selectors = [
-            'div.tgme_widget_message_text',
-            'div.js-message_text',
-            'div[class*="message_text"]'
-        ]
-        
-        for selector in text_selectors:
-            text_div = post.select_one(selector)
-            if text_div:
-                text_content = text_div.get_text(strip=True, separator=' ')
-                all_text += text_content + " "
-                logger.info(f"📝 Matn topildi ({selector}): {text_content[:100]}...")
-                break
-        
-        # 2. PHOTO OCR
-        photo_selectors = [
-            'a.tgme_widget_message_photo_wrap',
-            'div.tgme_widget_message_photo',
-            'img[src*="telegram"]'
-        ]
-        
-        for selector in photo_selectors:
-            photo_element = post.select_one(selector)
-            if photo_element:
-                image_url = None
-                
-                # Style'dan URL olish
-                style = photo_element.get('style', '')
-                if 'background-image:url(' in style:
-                    url_match = re.search(r'background-image:url\(([^)]+)\)', style)
-                    if url_match:
-                        image_url = url_match.group(1).strip('"\'')
-                
-                # img src'dan URL olish
-                elif photo_element.name == 'img':
-                    image_url = photo_element.get('src')
-                
-                if image_url and OCR_AVAILABLE:
-                    logger.info(f"🖼️ Rasm topildi: {image_url}")
-                    ocr_text = await process_image_ocr(image_url)
-                    if ocr_text:
-                        all_text += " " + ocr_text
-                break
-        
-        # 3. CONTENT ANALYSIS
-        if all_text.strip():
-            await analyze_post_content(all_text.strip(), post_id)
-        else:
-            logger.warning(f"⚠️ Post {post_id} da matn topilmadi")
-            # Debug uchun HTML structure
-            logger.info(f"Post HTML: {str(post)[:300]}...")
-        
-    except Exception as e:
-        logger.error(f"❌ Post {post_id} tahlil xatolik: {e}")
-
-async def analyze_post_content(text: str, post_id: str):
-    """Post mazmunini tahlil qilish"""
-    logger.info(f"🔍 Post {post_id} mazmuni tahlil qilinmoqda...")
-    logger.info(f"📄 Matn: {text[:200]}...")
+    def save_data(self):
+        """Ma'lumotlarni saqlash"""
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
     
-    # Masjid nomini topish
-    mosque_key = find_mosque_advanced(text)
-    
-    if not mosque_key:
-        logger.info(f"⚠️ Post {post_id} da masjid nomi topilmadi")
-        return
-    
-    # Namaz vaqtlarini topish
-    prayer_times = extract_prayer_times_advanced(text)
-    
-    if not prayer_times:
-        logger.info(f"⚠️ Post {post_id} da namaz vaqtlari topilmadi")
-        return
-    
-    # Ma'lumotlarni yangilash va notification yuborish
-    await update_mosque_data_and_notify(mosque_key, prayer_times, post_id)
-
-async def update_mosque_data_and_notify(mosque_key: str, new_prayer_times: Dict[str, str], post_id: str):
-    """Masjid ma'lumotlarini yangilash va push notification"""
-    if mosque_key not in masjidlar_data:
-        logger.warning(f"⚠️ Noma'lum masjid kaliti: {mosque_key}")
-        return
-    
-    mosque_name = MASJIDLAR_3_ALIFBO[mosque_key]["full_name"]
-    old_times = masjidlar_data[mosque_key].copy()
-    changes = {}
-    
-    # O'zgarishlarni aniqlash
-    for prayer, new_time in new_prayer_times.items():
-        if prayer in old_times:
-            if old_times[prayer] != new_time:
-                changes[prayer] = {
-                    'old': old_times[prayer],
-                    'new': new_time
+    def get_user(self, user_id: int) -> dict:
+        """Foydalanuvchi ma'lumotlarini olish"""
+        user_id = str(user_id)
+        if user_id not in self.data['users']:
+            self.data['users'][user_id] = {
+                'id': user_id,
+                'tasks': [],
+                'projects': [],
+                'teams': [],
+                'settings': {
+                    'notifications': True,
+                    'language': 'uz'  # Default til
                 }
-                masjidlar_data[mosque_key][prayer] = new_time
+            }
+            self.save_data()
+        return self.data['users'][user_id]
     
-    # Yangilanish bo'lsa
-    if changes:
-        logger.info(f"✅ {mosque_name} vaqtlari yangilandi: {changes}")
-        # Update timestamp
-        MASJIDLAR_3_ALIFBO[mosque_key]["last_updated"] = datetime.now().strftime('%Y-%m-%d')
-        # Push notification yuborish
-        await send_push_notifications(mosque_key, mosque_name, changes, post_id)
-    else:
-        logger.info(f"ℹ️ {mosque_name} vaqtlari o'zgarmagan")
-
-async def send_push_notifications(mosque_key: str, mosque_name: str, changes: Dict[str, Dict], post_id: str):
-    """Push notification yuborish"""
-    if not bot_app:
-        logger.warning("⚠️ Bot app mavjud emas")
-        return
+    def get_user_language(self, user_id: int) -> str:
+        """Foydalanuvchi tilini olish"""
+        user = self.get_user(user_id)
+        return user['settings'].get('language', 'uz')
     
-    qoqon_tz = pytz.timezone('Asia/Tashkent')
-    now = datetime.now(qoqon_tz)
+    def set_user_language(self, user_id: int, language: str):
+        """Foydalanuvchi tilini o'zgartirish"""
+        user = self.get_user(user_id)
+        user['settings']['language'] = language
+        self.save_data()
     
-    # Xabar tayyorlash
-    message = f"🔔 *NAMAZ VAQTI YANGILANDI*\n\n"
-    message += f"🕌 *{mosque_name.replace('JOME MASJIDI', '').strip()}*\n\n"
-    
-    # Emoji'lar
-    prayer_emojis = {
-        "Bomdod": "🌅",
-        "Peshin": "☀️", 
-        "Asr": "🌆",
-        "Shom": "🌇",
-        "Hufton": "🌙"
-    }
-    
-    # O'zgarishlarni ko'rsatish
-    for prayer, change in changes.items():
-        emoji = prayer_emojis.get(prayer, "🕐")
-        message += f"{emoji} *{prayer}:* {change['old']} → *{change['new']}*\n"
-    
-    message += f"\n📅 Yangilangan: {now.strftime('%d.%m.%Y %H:%M')}"
-    message += f"\n📺 Manba: @{CHANNEL_USERNAME}"
-    message += f"\n🆔 Post: {post_id}"
-    
-    # Foydalanuvchilarga yuborish
-    sent_count = 0
-    error_count = 0
-    
-    logger.info(f"📤 Push notification boshlandi. Jami userlar: {len(user_settings)}")
-    
-    for user_id, settings in user_settings.items():
-        selected_mosques = set(settings.get('selected_masjids', []))
-        logger.info(f"👤 User {user_id} selected: {selected_mosques}")
+    def create_task(self, user_id: int, title: str, description: str = None, 
+                   deadline: str = None) -> str:
+        """Yangi vazifa yaratish"""
+        self.data['task_counter'] += 1
+        task_id = f"TASK_{self.data['task_counter']:04d}"
         
-        if mosque_key in selected_mosques:
-            try:
-                await bot_app.bot.send_message(
-                    chat_id=int(user_id),
-                    text=message,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True
-                )
-                sent_count += 1
-                logger.info(f"✅ User {user_id} ga yuborildi")
-                await asyncio.sleep(0.1)  # Rate limiting
-                
-            except Exception as e:
-                error_count += 1
-                logger.warning(f"⚠️ User {user_id} ga yuborilmadi: {e}")
-    
-    # Statistika
-    push_notification_stats['auto_update'] += sent_count
-    push_notification_stats['error'] += error_count
-    
-    logger.info(f"📤 Push notification yakunlandi: {sent_count} muvaffaq, {error_count} xatolik")
-
-async def start_channel_monitoring():
-    """Kanal monitoring loop"""
-    logger.info(f"👀 Kanal monitoring boshlandi: @{CHANNEL_USERNAME}")
-    logger.info(f"🔤 3 alifbo qo'llab-quvvatlanadi: Lotin, Kiril, Arab")
-    logger.info(f"🖼️ OCR: {'✅ Faol' if OCR_AVAILABLE else '❌ Faol emas'}")
-    
-    while True:
-        try:
-            await scrape_telegram_channel()
-            # Har 2 daqiqada tekshirish
-            await asyncio.sleep(120)
-            
-        except Exception as e:
-            logger.error(f"❌ Monitoring loop xatolik: {e}")
-            # Xatolik bo'lsa 5 daqiqa kutish
-            await asyncio.sleep(300)
-
-# ========================================
-# USER MANAGEMENT FUNCTIONS
-# ========================================
-
-def get_user_selected_masjids(user_id: str) -> Set[str]:
-    """Foydalanuvchi tanlagan masjidlar"""
-    return set(user_settings.get(str(user_id), {}).get('selected_masjids', []))
-
-def save_user_masjids(user_id: str, selected_masjids: Set[str]):
-    """Foydalanuvchi tanlagan masjidlarni saqlash"""
-    user_id_str = str(user_id)
-    if user_id_str not in user_settings:
-        user_settings[user_id_str] = {}
-    user_settings[user_id_str]['selected_masjids'] = list(selected_masjids)
-    
-    # Analytics
-    log_masjid_selection(user_id, list(selected_masjids))
-    
-    logger.info(f"💾 User {user_id} masjidlari saqlandi: {len(selected_masjids)} ta")
-
-def get_main_keyboard():
-    """Asosiy foydalanuvchi klaviaturasi"""
-    keyboard = [
-        ['🕐 Barcha vaqtlar', '⏰ Eng yaqin vaqt'],
-        ['🕌 Masjidlar', '⚙️ Sozlamalar'],
-        ['ℹ️ Yordam']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def get_masjid_selection_keyboard(user_id: str) -> InlineKeyboardMarkup:
-    """Masjid tanlash klaviaturasi"""
-    selected = get_user_selected_masjids(user_id)
-    keyboard = []
-    
-    # Masjidlar ro'yxati (2 tadan qatorda)
-    masjid_items = list(MASJIDLAR_3_ALIFBO.items())
-    for i in range(0, len(masjid_items), 2):
-        row = []
-        for j in range(2):
-            if i + j < len(masjid_items):
-                key, data = masjid_items[i + j]
-                # Icon
-                icon = "✅" if key in selected else "⬜"
-                # Qisqa nom
-                short_name = data["full_name"].replace("JOME MASJIDI", "").strip()
-                if len(short_name) > 12:
-                    short_name = short_name[:12] + "..."
-                
-                row.append(InlineKeyboardButton(
-                    f"{icon} {short_name}", 
-                    callback_data=f"toggle_{key}"
-                ))
-        keyboard.append(row)
-    
-    # Boshqaruv tugmalari
-    control_buttons = [
-        [
-            InlineKeyboardButton("✅ Barchasini tanlash", callback_data="select_all"),
-            InlineKeyboardButton("❌ Barchasini bekor qilish", callback_data="deselect_all")
-        ],
-        [
-            InlineKeyboardButton("💾 Saqlash", callback_data="save_settings"),
-            InlineKeyboardButton("🔙 Orqaga", callback_data="back_main")
-        ]
-    ]
-    keyboard.extend(control_buttons)
-    
-    return InlineKeyboardMarkup(keyboard)
-
-# ========================================
-# ADMIN PANEL FUNCTIONS
-# ========================================
-
-def get_admin_keyboard():
-    """Admin klaviaturasi"""
-    keyboard = [
-        ['📊 User Analytics', '🕌 Masjid Management'],
-        ['📢 Push Notifications', '📈 Statistics'],
-        ['🔧 Manual Update', '⚙️ Bot Settings'],
-        ['🚪 Admin Exit']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-async def admin_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin login"""
-    user_id = str(update.effective_user.id)
-    
-    admin_sessions.add(user_id)
-    await update.message.reply_text(
-        "🔐 *ADMIN PANEL*\n\nXush kelibsiz, Admin!\n\n"
-        "🎯 Monitoring faol\n"
-        f"📺 Kanal: @{CHANNEL_USERNAME}\n"
-        f"👥 Userlar: {len(user_settings)}\n"
-        f"🕌 Masjidlar: {len(MASJIDLAR_3_ALIFBO)}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_admin_keyboard()
-    )
-    logger.info(f"👨‍💼 Admin login: {user_id}")
-
-async def show_user_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User analytics"""
-    total_users = len(user_settings)
-    active_users = len([u for u, last in user_last_activity.items() 
-                       if last > datetime.now() - timedelta(days=7)])
-    
-    # Yangi userlar (7 kun)
-    week_ago = datetime.now() - timedelta(days=7)
-    new_users = len([d for d in user_join_dates.values() if d > week_ago])
-    
-    # Top faol userlar
-    top_users = sorted(user_activity.items(), key=lambda x: x[1], reverse=True)[:3]
-    
-    # Masjid statistikasi
-    avg_selected = sum(len(settings.get('selected_masjids', [])) 
-                      for settings in user_settings.values()) / max(total_users, 1)
-    
-    message = f"""📊 *USER ANALYTICS*
-
-👥 *Umumiy:*
-• Jami foydalanuvchilar: *{total_users}*
-• Faol (7 kun): *{active_users}*
-• Yangi (7 kun): *{new_users}*
-• O'rtacha tanlangan: *{avg_selected:.1f}* masjid
-
-🔥 *Eng faol:*"""
-    
-    for i, (user_id, activity) in enumerate(top_users, 1):
-        try:
-            user_info = await bot_app.bot.get_chat(int(user_id))
-            name = user_info.first_name or "Noma'lum"
-        except:
-            name = "Noma'lum"
-        message += f"\n{i}. {name}: {activity} ta harakat"
-    
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_admin_keyboard()
-    )
-
-async def handle_manual_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual vaqt yangilash"""
-    qoqon_tz = pytz.timezone('Asia/Tashkent')
-    now = datetime.now(qoqon_tz)
-    
-    # +5 daqiqa qo'shib test vaqtlari
-    test_times = {
-        "Bomdod": (now.replace(hour=5, minute=0) + timedelta(minutes=5)).strftime("%H:%M"),
-        "Peshin": (now.replace(hour=12, minute=30) + timedelta(minutes=5)).strftime("%H:%M"),
-        "Asr": (now.replace(hour=15, minute=45) + timedelta(minutes=5)).strftime("%H:%M"),
-        "Shom": (now.replace(hour=18, minute=20) + timedelta(minutes=5)).strftime("%H:%M"),
-        "Hufton": (now.replace(hour=20, minute=0) + timedelta(minutes=5)).strftime("%H:%M")
-    }
-    
-    # Barcha masjidlarni yangilash
-    updated_count = 0
-    for masjid_key in MASJIDLAR_3_ALIFBO.keys():
-        if masjid_key in masjidlar_data:
-            masjidlar_data[masjid_key].update(test_times)
-            MASJIDLAR_3_ALIFBO[masjid_key]["last_updated"] = now.strftime('%Y-%m-%d')
-            updated_count += 1
-    
-    # Barcha foydalanuvchilarga push
-    notification_message = f"""🔄 *ADMIN TOMONIDAN YANGILANDI*
-
-Barcha masjidlar vaqti yangilandi:
-
-🌅 Bomdod: *{test_times['Bomdod']}*
-☀️ Peshin: *{test_times['Peshin']}*
-🌆 Asr: *{test_times['Asr']}*
-🌇 Shom: *{test_times['Shom']}*
-🌙 Hufton: *{test_times['Hufton']}*
-
-📅 Yangilangan: {now.strftime("%d.%m.%Y %H:%M")}
-👨‍💼 Admin tomonidan manual yangilanish"""
-    
-    sent_count = 0
-    for user_id in user_settings.keys():
-        try:
-            await bot_app.bot.send_message(
-                chat_id=int(user_id),
-                text=notification_message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            sent_count += 1
-            await asyncio.sleep(0.1)
-        except:
-            pass
-    
-    push_notification_stats['admin_update'] += sent_count
-    
-    await update.message.reply_text(
-        f"""✅ *MANUAL UPDATE MUVAFFAQIYATLI*
-
-• Yangilangan masjidlar: *{updated_count}*
-• Push yuborilgan userlar: *{sent_count}*
-
-🕐 Yangi vaqtlar faol!""",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_admin_keyboard()
-    )
-
-# ========================================
-# BOT COMMAND HANDLERS
-# ========================================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
-    user_id = update.effective_user.id
-    user_id_str = str(user_id)
-    
-    # Analytics
-    log_user_join(user_id_str)
-    log_user_activity(user_id_str, 'start')
-    
-    # Default masjidlarni tanlash
-    if user_id_str not in user_settings:
-        save_user_masjids(user_id, set(MASJIDLAR_3_ALIFBO.keys()))
-        logger.info(f"👤 Yangi user: {user_id} - barcha masjidlar tanlandi")
-    
-    # Welcome message
-    welcome_message = f"""🕌 *Assalomu alaykum!*
-
-*Qo'qon Masjidlari Namaz Vaqti Botiga xush kelibsiz!*
-
-🔄 *REAL-TIME YANGILANISHLAR:*
-Bot @{CHANNEL_USERNAME} kanalini doimiy kuzatib turadi va namaz vaqtlarini avtomatik yangilaydi!
-
-🔤 *3 ALIFBO QOLLAB-QUVVATLASH:*
-• **Lotin:** norbutabek, gishtlik, bomdod
-• **Kiril:** норбутабек, гиштлик, бомдод  
-• **Arab:** نوربوتابيك, غیشتلیك, فجر
-
-🖼️ *OCR RASM TAHLILI:*
-{'✅ Rasmlardan avtomatik matn o\'qish faol' if OCR_AVAILABLE else '⚠️ Faqat matn tahlili (OCR faol emas)'}
-
-⚙️ *Sozlamalar* orqali kerakli masjidlarni tanlashingiz mumkin.
-
-👨‍💼 *Admin:* `{ADMIN_PASSWORD}` yozing
-
-📍 Barcha vaqtlar Qo'qon mahalliy vaqti bo'yicha."""
-    
-    await update.message.reply_text(
-        welcome_message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_main_keyboard()
-    )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Barcha xabarlarni boshqarish"""
-    text = update.message.text
-    user_id = str(update.effective_user.id)
-    
-    # Analytics
-    log_user_activity(user_id, 'message')
-    
-    # Admin login check
-    if text == ADMIN_PASSWORD:
-        await admin_login(update, context)
-        return
-    
-    # Admin panel commands
-    if is_admin(user_id):
-        admin_commands = {
-            '📊 User Analytics': show_user_analytics,
-            '🔧 Manual Update': handle_manual_update,
-            '🚪 Admin Exit': handle_admin_exit
+        task = {
+            'id': task_id,
+            'title': title,
+            'description': description,
+            'status': TaskStatus.TODO.value,
+            'priority': TaskPriority.MEDIUM.value,
+            'created_by': str(user_id),
+            'assigned_to': str(user_id),
+            'created_date': datetime.now().isoformat(),
+            'deadline': deadline,
+            'project_id': None,
+            'team_id': None,
+            'completed': False,
+            'archived': False,
+            'pinned': False
         }
         
-        if text in admin_commands:
-            await admin_commands[text](update, context)
-            return
+        self.data['tasks'][task_id] = task
+        user = self.get_user(user_id)
+        user['tasks'].append(task_id)
+        self.save_data()
+        
+        return task_id
     
-    # Regular user commands
-    user_commands = {
-        '🕐 Barcha vaqtlar': handle_all_times,
-        '⏰ Eng yaqin vaqt': handle_next_prayer,
-        '🕌 Masjidlar': handle_all_masjids,
-        '⚙️ Sozlamalar': handle_settings,
-        'ℹ️ Yordam': handle_help
-    }
+    def get_user_tasks(self, user_id: int, filter_type: str = 'all') -> List[dict]:
+        """Foydalanuvchi vazifalarini olish"""
+        user = self.get_user(user_id)
+        tasks = []
+        
+        for task_id in user['tasks']:
+            if task_id in self.data['tasks']:
+                task = self.data['tasks'][task_id]
+                
+                # Filtrlash
+                if filter_type == 'active' and task['status'] in [TaskStatus.DONE.value, TaskStatus.CANCELLED.value]:
+                    continue
+                elif filter_type == 'completed' and task['status'] != TaskStatus.DONE.value:
+                    continue
+                elif filter_type == 'today':
+                    if task['deadline']:
+                        deadline_date = datetime.fromisoformat(task['deadline']).date()
+                        if deadline_date != datetime.now().date():
+                            continue
+                    else:
+                        continue
+                elif filter_type == 'overdue':
+                    if task['deadline'] and task['status'] != TaskStatus.DONE.value:
+                        deadline_date = datetime.fromisoformat(task['deadline'])
+                        if deadline_date >= datetime.now():
+                            continue
+                    else:
+                        continue
+                elif filter_type == 'high_priority' and task['priority'] not in [TaskPriority.HIGH.value, TaskPriority.URGENT.value]:
+                    continue
+                
+                tasks.append(task)
+        
+        # Saralash: pinned > priority > deadline
+        tasks.sort(key=lambda x: (
+            not x.get('pinned', False),
+            x['priority'] != TaskPriority.URGENT.value,
+            x['priority'] != TaskPriority.HIGH.value,
+            x['deadline'] or '9999-12-31'
+        ))
+        
+        return tasks
     
-    if text in user_commands:
-        await user_commands[text](update, context)
-    else:
-        await update.message.reply_text(
-            "Quyidagi knopkalardan foydalaning:",
-            reply_markup=get_main_keyboard()
-        )
+    def update_task(self, task_id: str, **kwargs):
+        """Vazifani yangilash"""
+        if task_id in self.data['tasks']:
+            self.data['tasks'][task_id].update(kwargs)
+            self.save_data()
+            return True
+        return False
+    
+    def delete_task(self, task_id: str, user_id: int):
+        """Vazifani o'chirish"""
+        if task_id in self.data['tasks']:
+            del self.data['tasks'][task_id]
+            user = self.get_user(user_id)
+            if task_id in user['tasks']:
+                user['tasks'].remove(task_id)
+            self.save_data()
+            return True
+        return False
+    
+    def create_project(self, user_id: int, name: str, description: str = None) -> str:
+        """Yangi loyiha yaratish"""
+        self.data['project_counter'] += 1
+        project_id = f"PROJ_{self.data['project_counter']:04d}"
+        
+        project = {
+            'id': project_id,
+            'name': name,
+            'description': description,
+            'created_by': str(user_id),
+            'created_date': datetime.now().isoformat(),
+            'tasks': [],
+            'members': [str(user_id)],
+            'archived': False
+        }
+        
+        self.data['projects'][project_id] = project
+        user = self.get_user(user_id)
+        user['projects'].append(project_id)
+        self.save_data()
+        
+        return project_id
+    
+    def get_user_projects(self, user_id: int) -> List[dict]:
+        """Foydalanuvchi loyihalarini olish"""
+        user = self.get_user(user_id)
+        projects = []
+        
+        for project_id in user['projects']:
+            if project_id in self.data['projects']:
+                projects.append(self.data['projects'][project_id])
+        
+        return projects
+    
+    def create_team(self, user_id: int, name: str, description: str = None) -> str:
+        """Yangi jamoa yaratish"""
+        self.data['team_counter'] += 1
+        team_id = f"TEAM_{self.data['team_counter']:04d}"
+        
+        team = {
+            'id': team_id,
+            'name': name,
+            'description': description,
+            'created_by': str(user_id),
+            'created_date': datetime.now().isoformat(),
+            'members': [str(user_id)],
+            'projects': [],
+            'archived': False
+        }
+        
+        self.data['teams'][team_id] = team
+        user = self.get_user(user_id)
+        user['teams'].append(team_id)
+        self.save_data()
+        
+        return team_id
+    
+    def get_user_teams(self, user_id: int) -> List[dict]:
+        """Foydalanuvchi jamoalarini olish"""
+        user = self.get_user(user_id)
+        teams = []
+        
+        for team_id in user['teams']:
+            if team_id in self.data['teams']:
+                teams.append(self.data['teams'][team_id])
+        
+        return teams
 
-async def handle_admin_exit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin paneldan chiqish"""
-    user_id = str(update.effective_user.id)
-    admin_sessions.discard(user_id)
+# Bot klassi
+class TaskBot:
+    def __init__(self, token: str):
+        self.token = token
+        self.db = DataManager()
+        self.updater = Updater(token, use_context=True)
+        self.dp = self.updater.dispatcher
+        self.setup_handlers()
     
-    await update.message.reply_text(
-        "👋 Admin paneldan muvaffaqiyatli chiqildi.\n\nOddiy foydalanuvchi rejimiga qaytdingiz.",
-        reply_markup=get_main_keyboard()
-    )
-
-# ========================================
-# USER COMMAND HANDLERS
-# ========================================
-
-async def handle_all_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Barcha namaz vaqtlari"""
-    message = "🕐 *NAMAZ VAQTLARI*\n\n"
+    def get_text(self, user_id: int, key: str) -> str:
+        """Foydalanuvchi tiliga mos matnni olish"""
+        lang = self.db.get_user_language(user_id)
+        return LANGUAGES[lang].get(key, key)
     
-    for masjid_key in MASJIDLAR_3_ALIFBO.keys():
-        if masjid_key in masjidlar_data:
-            times = masjidlar_data[masjid_key]
-            name = MASJIDLAR_3_ALIFBO[masjid_key]["full_name"]
-            last_updated = MASJIDLAR_3_ALIFBO[masjid_key]["last_updated"]
+    def get_main_keyboard(self, user_id: int) -> ReplyKeyboardMarkup:
+        """Asosiy klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        keyboard = [
+            [t('my_tasks'), t('new_task')],
+            [t('projects'), t('teams')],
+            [t('today_tasks'), t('calendar')],
+            [t('reports'), t('settings')]
+        ]
+        
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    def get_task_filter_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
+        """Vazifalar filtri uchun inline klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(t('all_tasks'), callback_data='filter_all'),
+                InlineKeyboardButton(t('today'), callback_data='filter_today')
+            ],
+            [
+                InlineKeyboardButton(t('high_priority'), callback_data='filter_high'),
+                InlineKeyboardButton(t('overdue'), callback_data='filter_overdue')
+            ],
+            [
+                InlineKeyboardButton(t('completed'), callback_data='filter_completed'),
+                InlineKeyboardButton(t('upcoming'), callback_data='filter_upcoming')
+            ],
+            [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+        ]
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_task_actions_keyboard(self, user_id: int, task_id: str) -> InlineKeyboardMarkup:
+        """Vazifa amallari uchun inline klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        task = self.db.data['tasks'].get(task_id, {})
+        
+        keyboard = []
+        
+        # Status o'zgartirish
+        status_buttons = []
+        if task.get('status') != TaskStatus.DONE.value:
+            status_buttons.append(InlineKeyboardButton(t('mark_done'), callback_data=f'task_done_{task_id}'))
+        status_buttons.append(InlineKeyboardButton(t('change_status'), callback_data=f'task_status_{task_id}'))
+        keyboard.append(status_buttons)
+        
+        # Priority va boshqa amallar
+        keyboard.append([
+            InlineKeyboardButton(t('change_priority'), callback_data=f'task_priority_{task_id}'),
+            InlineKeyboardButton(t('edit'), callback_data=f'task_edit_{task_id}')
+        ])
+        
+        # Pin/Unpin va Archive
+        pin_archive = []
+        if task.get('pinned'):
+            pin_archive.append(InlineKeyboardButton(t('unpin'), callback_data=f'task_unpin_{task_id}'))
+        else:
+            pin_archive.append(InlineKeyboardButton(t('pin'), callback_data=f'task_pin_{task_id}'))
+        
+        if task.get('archived'):
+            pin_archive.append(InlineKeyboardButton(t('unarchive'), callback_data=f'task_unarchive_{task_id}'))
+        else:
+            pin_archive.append(InlineKeyboardButton(t('archive'), callback_data=f'task_archive_{task_id}'))
+        keyboard.append(pin_archive)
+        
+        # Duplicate va Delete
+        keyboard.append([
+            InlineKeyboardButton(t('duplicate'), callback_data=f'task_duplicate_{task_id}'),
+            InlineKeyboardButton(t('delete'), callback_data=f'task_delete_{task_id}')
+        ])
+        
+        # Orqaga
+        keyboard.append([InlineKeyboardButton(t('back'), callback_data='my_tasks')])
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_status_keyboard(self, user_id: int, task_id: str) -> InlineKeyboardMarkup:
+        """Status tanlash uchun klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        keyboard = [
+            [InlineKeyboardButton(t('status_todo'), callback_data=f'set_status_{task_id}_{TaskStatus.TODO.value}')],
+            [InlineKeyboardButton(t('status_in_progress'), callback_data=f'set_status_{task_id}_{TaskStatus.IN_PROGRESS.value}')],
+            [InlineKeyboardButton(t('status_review'), callback_data=f'set_status_{task_id}_{TaskStatus.REVIEW.value}')],
+            [InlineKeyboardButton(t('status_done'), callback_data=f'set_status_{task_id}_{TaskStatus.DONE.value}')],
+            [InlineKeyboardButton(t('status_cancelled'), callback_data=f'set_status_{task_id}_{TaskStatus.CANCELLED.value}')],
+            [InlineKeyboardButton(t('back'), callback_data=f'task_view_{task_id}')]
+        ]
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_priority_keyboard(self, user_id: int, task_id: str) -> InlineKeyboardMarkup:
+        """Priority tanlash uchun klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        keyboard = [
+            [InlineKeyboardButton(t('priority_low'), callback_data=f'set_priority_{task_id}_{TaskPriority.LOW.value}')],
+            [InlineKeyboardButton(t('priority_medium'), callback_data=f'set_priority_{task_id}_{TaskPriority.MEDIUM.value}')],
+            [InlineKeyboardButton(t('priority_high'), callback_data=f'set_priority_{task_id}_{TaskPriority.HIGH.value}')],
+            [InlineKeyboardButton(t('priority_urgent'), callback_data=f'set_priority_{task_id}_{TaskPriority.URGENT.value}')],
+            [InlineKeyboardButton(t('back'), callback_data=f'task_view_{task_id}')]
+        ]
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_settings_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
+        """Sozlamalar uchun klaviatura"""
+        t = lambda key: self.get_text(user_id, key)
+        user = self.db.get_user(user_id)
+        notif_status = t('notifications_on') if user['settings']['notifications'] else t('notifications_off')
+        
+        keyboard = [
+            [InlineKeyboardButton(f"{t('language')}: {LANGUAGES[user['settings']['language']]['flag']}", 
+                                 callback_data='change_language')],
+            [InlineKeyboardButton(notif_status, callback_data='toggle_notifications')],
+            [InlineKeyboardButton(t('profile'), callback_data='view_profile')],
+            [InlineKeyboardButton(t('feedback'), callback_data='send_feedback')],
+            [InlineKeyboardButton(t('about'), callback_data='about_bot')],
+            [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+        ]
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def get_language_keyboard(self) -> InlineKeyboardMarkup:
+        """Til tanlash uchun klaviatura"""
+        keyboard = [
+            [InlineKeyboardButton(lang_data['name'], callback_data=f'set_lang_{lang_code}')]
+            for lang_code, lang_data in LANGUAGES.items()
+        ]
+        keyboard.append([InlineKeyboardButton('◀️', callback_data='settings')])
+        
+        return InlineKeyboardMarkup(keyboard)
+    
+    def format_task(self, task: dict, user_id: int, detailed: bool = False) -> str:
+        """Vazifani formatlash"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        # Status va priority iconkalari
+        status_icons = {
+            TaskStatus.TODO.value: t('status_todo'),
+            TaskStatus.IN_PROGRESS.value: t('status_in_progress'),
+            TaskStatus.REVIEW.value: t('status_review'),
+            TaskStatus.DONE.value: t('status_done'),
+            TaskStatus.CANCELLED.value: t('status_cancelled')
+        }
+        
+        priority_icons = {
+            TaskPriority.LOW.value: t('priority_low'),
+            TaskPriority.MEDIUM.value: t('priority_medium'),
+            TaskPriority.HIGH.value: t('priority_high'),
+            TaskPriority.URGENT.value: t('priority_urgent')
+        }
+        
+        # Asosiy ma'lumotlar
+        text = f"📋 <b>{task['title']}</b>\n"
+        
+        if task.get('pinned'):
+            text = "📌 " + text
+        
+        text += f"\n{t('status')}: {status_icons.get(task['status'], task['status'])}\n"
+        text += f"{t('priority')}: {priority_icons.get(task['priority'], task['priority'])}\n"
+        
+        if task.get('deadline'):
+            deadline = datetime.fromisoformat(task['deadline'])
+            days_left = (deadline - datetime.now()).days
             
-            message += f"🕌 *{name.replace('JOME MASJIDI', '').strip()}*\n"
-            message += f"🌅 Bomdod: *{times['Bomdod']}* ☀️ Peshin: *{times['Peshin']}*\n"
-            message += f"🌆 Asr: *{times['Asr']}* 🌇 Shom: *{times['Shom']}* 🌙 Hufton: *{times['Hufton']}*\n"
-            message += f"📅 Yangilangan: {last_updated}\n\n"
-    
-    qoqon_tz = pytz.timezone('Asia/Tashkent')
-    now = datetime.now(qoqon_tz)
-    current_time = now.strftime("%H:%M")
-    
-    message += f"⏰ Hozirgi vaqt: {current_time} (Qo'qon vaqti)\n"
-    message += f"🔄 @{CHANNEL_USERNAME} dan real-time yangilanadi\n"
-    message += f"🔤 3 alifbo qo'llab-quvvatlanadi"
-    
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_main_keyboard()
-    )
-
-async def handle_next_prayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Eng yaqin namaz vaqti"""
-    user_id = str(update.effective_user.id)
-    selected = get_user_selected_masjids(user_id)
-    
-    if not selected:
-        await update.message.reply_text(
-            "❌ Hech qanday masjid tanlanmagan!\n⚙️ Sozlamalar orqali masjidlarni tanlang.",
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    qoqon_tz = pytz.timezone('Asia/Tashkent')
-    now = datetime.now(qoqon_tz)
-    current_time = now.strftime("%H:%M")
-    
-    prayer_names = ["Bomdod", "Peshin", "Asr", "Shom", "Hufton"]
-    next_prayers = []
-    
-    for masjid_key in selected:
-        if masjid_key in masjidlar_data:
-            times = masjidlar_data[masjid_key]
-            name = MASJIDLAR_3_ALIFBO[masjid_key]["full_name"]
+            if days_left < 0:
+                text += f"{t('deadline')}: <b>⏰ {abs(days_left)} kun o'tib ketdi!</b>\n"
+            elif days_left == 0:
+                text += f"{t('deadline')}: <b>📅 Bugun!</b>\n"
+            elif days_left == 1:
+                text += f"{t('deadline')}: <b>📅 Ertaga</b>\n"
+            else:
+                text += f"{t('deadline')}: 📅 {deadline.strftime('%d.%m.%Y')} ({days_left} kun qoldi)\n"
+        
+        if detailed:
+            if task.get('description'):
+                text += f"\n{t('description')}:\n{task['description']}\n"
             
-            for prayer in prayer_names:
-                prayer_time = times[prayer]
-                if prayer_time > current_time:
-                    next_prayers.append({
-                        'masjid': name,
-                        'prayer': prayer,
-                        'time': prayer_time
-                    })
-                    break
-    
-    if next_prayers:
-        next_prayers.sort(key=lambda x: x['time'])
-        next_prayer = next_prayers[0]
+            created_date = datetime.fromisoformat(task['created_date'])
+            text += f"\n{t('created_date')}: {created_date.strftime('%d.%m.%Y %H:%M')}\n"
+            
+            if task.get('project_id'):
+                project = self.db.data['projects'].get(task['project_id'])
+                if project:
+                    text += f"📁 {t('projects')}: {project['name']}\n"
+            
+            if task.get('team_id'):
+                team = self.db.data['teams'].get(task['team_id'])
+                if team:
+                    text += f"👥 {t('teams')}: {team['name']}\n"
         
-        message = f"""⏰ *ENG YAQIN NAMAZ VAQTI*
-
-🕌 {next_prayer['masjid'].replace('JOME MASJIDI', '').strip()}
-🕐 {next_prayer['prayer']}: *{next_prayer['time']}*
-
-📅 Hozirgi vaqt: {current_time} (Qo'qon vaqti)
-
-🔔 Vaqt yangilanishi bilan avtomatik xabar olasiz!"""
-    else:
-        message = f"""📅 Bugun uchun barcha namaz vaqtlari o'tdi.
-
-Ertaga Bomdod vaqti bilan davom etadi.
-
-⏰ Hozirgi vaqt: {current_time} (Qo'qon vaqti)"""
+        return text
     
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_main_keyboard()
-    )
-
-async def handle_all_masjids(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Barcha masjidlar ro'yxati"""
-    message = "🕌 *BARCHA MASJIDLAR*\n\n"
-    
-    for i, (key, data) in enumerate(MASJIDLAR_3_ALIFBO.items(), 1):
-        coords = data['coordinates']
-        popularity = masjid_popularity[key]
+    # Handler metodlari
+    def start_handler(self, update: Update, context: CallbackContext):
+        """Start komandasi"""
+        user_id = update.effective_user.id
+        user = self.db.get_user(user_id)
         
-        message += f"{i}. *{data['full_name']}*\n"
-        message += f"   📍 {coords[0]:.3f}, {coords[1]:.3f}\n"
-        message += f"   📊 {popularity} marta tanlangan\n\n"
-    
-    message += f"📊 Jami: {len(MASJIDLAR_3_ALIFBO)} ta masjid\n\n"
-    message += "⚙️ *Sozlamalar* orqali kerakli masjidlarni tanlang.\n"
-    message += f"🔄 Vaqtlar @{CHANNEL_USERNAME} dan real-time yangilanadi!"
-    
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_main_keyboard()
-    )
-
-async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Foydalanuvchi sozlamalari"""
-    user_id = str(update.effective_user.id)
-    selected = get_user_selected_masjids(user_id)
-    
-    log_user_activity(user_id, 'settings')
-    
-    message = f"""⚙️ *PUSH NOTIFICATION SOZLAMALARI*
-
-Siz hozirda *{len(selected)} ta masjid* uchun bildirishnoma olasiz.
-
-🔔 *Real-time yangilanishlar:*
-@{CHANNEL_USERNAME} kanalidan avtomatik yangilanadi!
-
-🔤 *3 alifbo qo'llab-quvvatlanadi:*
-• Lotin, Kiril, Arab alifbolari
-
-🖼️ *OCR:* {'✅ Rasm tahlili faol' if OCR_AVAILABLE else '❌ Faqat matn tahlili'}
-
-Quyida masjidlarni tanlang/bekor qiling:
-✅ - Tanlangan (push olasiz)
-⬜ - Tanlanmagan"""
-    
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_masjid_selection_keyboard(user_id)
-    )
-
-async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Yordam"""
-    help_text = f"""ℹ️ *YORDAM*
-
-🔄 *REAL-TIME KANAL MONITORING:*
-Bot @{CHANNEL_USERNAME} kanalini doimiy kuzatib turadi va namaz vaqtlarini avtomatik yangilaydi!
-
-🔤 *3 ALIFBO QOLLAB-QUVVATLASH:*
-• **Lotin:** norbutabek, gishtlik, bomdod, peshin
-• **Kiril:** норбутабек, гиштлик, бомдод, пешин  
-• **Arab:** نوربوتابيك, غیشتلیك, فجر, ظهر
-
-🖼️ *OCR RASM TAHLILI:*
-{'✅ Faol - rasmlardan avtomatik matn o\'qish' if OCR_AVAILABLE else '⚠️ Faol emas - faqat matn tahlili'}
-
-*Bot funksiyalari:*
-🕐 Barcha vaqtlar - Hamma masjidlar vaqti
-⏰ Eng yaqin vaqt - Keyingi namaz vaqti
-🕌 Masjidlar - To'liq ro'yxat va koordinatalar
-⚙️ Sozlamalar - Push notification uchun masjid tanlash
-
-🔔 *PUSH NOTIFICATION:*
-• Namaz vaqti yangilanishi bilan avtomatik xabar
-• Faqat tanlangan masjidlar uchun
-• Real-time o'zgarishlar haqida darhol xabar
-
-👨‍💼 *ADMIN PANEL:*
-`{ADMIN_PASSWORD}` yozib admin funksiyalariga kiring
-
-*Vaqt zonasi:* Qo'qon mahalliy vaqti (UTC+5)
-*Kanal:* @{CHANNEL_USERNAME}
-*Monitoring:* Har 2 daqiqada avtomatik"""
-    
-    await update.message.reply_text(
-        help_text,
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_main_keyboard()
-    )
-
-# ========================================
-# CALLBACK QUERY HANDLERS
-# ========================================
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback query'larni boshqarish"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    data = query.data
-    
-    # User settings callback'lar
-    if data.startswith("toggle_"):
-        await handle_masjid_toggle(query, context)
-    elif data == "select_all":
-        await handle_select_all(query, context)
-    elif data == "deselect_all":
-        await handle_deselect_all(query, context)
-    elif data == "save_settings":
-        await handle_save_settings(query, context)
-    elif data == "back_main":
-        await handle_back_main(query, context)
-
-async def handle_masjid_toggle(query, context):
-    """Masjid tanlash/bekor qilish"""
-    user_id = str(query.from_user.id)
-    masjid_key = query.data.replace("toggle_", "")
-    
-    selected = get_user_selected_masjids(user_id)
-    
-    if masjid_key in selected:
-        selected.remove(masjid_key)
-    else:
-        selected.add(masjid_key)
-    
-    save_user_masjids(user_id, selected)
-    
-    # Klaviaturani yangilash
-    await query.edit_message_reply_markup(
-        reply_markup=get_masjid_selection_keyboard(user_id)
-    )
-
-async def handle_select_all(query, context):
-    """Barcha masjidlarni tanlash"""
-    user_id = str(query.from_user.id)
-    save_user_masjids(user_id, set(MASJIDLAR_3_ALIFBO.keys()))
-    
-    await query.edit_message_reply_markup(
-        reply_markup=get_masjid_selection_keyboard(user_id)
-    )
-
-async def handle_deselect_all(query, context):
-    """Barcha masjidlarni bekor qilish"""
-    user_id = str(query.from_user.id)
-    save_user_masjids(user_id, set())
-    
-    await query.edit_message_reply_markup(
-        reply_markup=get_masjid_selection_keyboard(user_id)
-    )
-
-async def handle_save_settings(query, context):
-    """Sozlamalarni saqlash"""
-    user_id = str(query.from_user.id)
-    selected = get_user_selected_masjids(user_id)
-    
-    if selected:
-        mosque_names = [MASJIDLAR_3_ALIFBO[key]["full_name"].replace('JOME MASJIDI', '').strip() 
-                       for key in selected]
-        
-        await query.edit_message_text(
-            f"""✅ *SOZLAMALAR SAQLANDI!*
-
-Siz {len(selected)} ta masjid uchun push notification olasiz:
-
-{', '.join(mosque_names)}
-
-🔔 Namaz vaqti yangilanishi bilan avtomatik xabar olasiz!""",
-            parse_mode=ParseMode.MARKDOWN
+        welcome_text = self.get_text(user_id, 'welcome')
+        update.message.reply_text(
+            welcome_text,
+            reply_markup=self.get_main_keyboard(user_id),
+            parse_mode=ParseMode.HTML
         )
-    else:
-        await query.edit_message_text(
-            "⚠️ *HECH QANDAY MASJID TANLANMADI*\n\nSiz hech qanday push notification olmaysiz.\n\nKerak bo'lsa qaytadan sozlamalarni ochib masjid tanlang.",
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-async def handle_back_main(query, context):
-    """Asosiy menyuga qaytish"""
-    await query.edit_message_text("🔙 Asosiy menyuga qaytdingiz.")
-
-# ========================================
-# ERROR HANDLER
-# ========================================
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global error handler"""
-    logger.error(f"❌ Update {update} xatolik keltirib chiqardi: {context.error}")
-
-# ========================================
-# MAIN FUNCTION
-# ========================================
-
-def main():
-    """Asosiy funksiya"""
-    global bot_app
     
-    try:
-        # Flask health check server
-        threading.Thread(target=run_flask, daemon=True).start()
-        logger.info("🌐 Flask server ishga tushdi")
+    def help_handler(self, update: Update, context: CallbackContext):
+        """Yordam komandasi"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
         
-        # Telegram bot
-        bot_app = Application.builder().token(BOT_TOKEN).build()
+        help_text = f"""
+{t('help')} <b>Task Management Bot</b>
+
+<b>Asosiy komandalar:</b>
+/start - Botni ishga tushirish
+/help - Yordam
+/newtask - Yangi vazifa yaratish
+/mytasks - Vazifalarim
+/newproject - Yangi loyiha
+/projects - Loyihalar
+/newteam - Yangi jamoa
+/teams - Jamoalar
+/today - Bugungi vazifalar
+/report - Hisobot
+/settings - Sozlamalar
+/feedback - Fikr bildirish
+
+<b>Qo'shimcha:</b>
+• Barcha funksiyalar tugmalar orqali ham mavjud
+• Vazifalarni pinlash, arxivlash mumkin
+• 3 tilda ishlaydi: O'zbek, Rus, Qozoq
+• Deadline eslatmalari avtomatik yuboriladi
+        """
         
-        # Command handlers
-        bot_app.add_handler(CommandHandler("start", start_command))
-        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        bot_app.add_handler(CallbackQueryHandler(handle_callback_query))
+        update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    
+    def text_handler(self, update: Update, context: CallbackContext):
+        """Matnli xabarlarni qayta ishlash"""
+        user_id = update.effective_user.id
+        text = update.message.text
+        t = lambda key: self.get_text(user_id, key)
         
-        # Error handler
-        bot_app.add_error_handler(error_handler)
+        # Tugma bosilganda
+        if text == t('my_tasks'):
+            self.show_tasks(update, context)
+        elif text == t('new_task'):
+            self.new_task_start(update, context)
+        elif text == t('projects'):
+            self.show_projects(update, context)
+        elif text == t('teams'):
+            self.show_teams(update, context)
+        elif text == t('today_tasks'):
+            self.show_today_tasks(update, context)
+        elif text == t('calendar'):
+            self.show_calendar(update, context)
+        elif text == t('reports'):
+            self.show_reports_menu(update, context)
+        elif text == t('settings'):
+            self.show_settings(update, context)
+        else:
+            update.message.reply_text(
+                t('choose_action'),
+                reply_markup=self.get_main_keyboard(user_id)
+            )
+    
+    def show_tasks(self, update: Update, context: CallbackContext, filter_type: str = 'all'):
+        """Vazifalarni ko'rsatish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
         
-        # Logging
-        logger.info("✅ Bot handlerlar qo'shildi")
-        logger.info(f"🎯 Monitoring kanal: @{CHANNEL_USERNAME}")
-        logger.info(f"🧪 Test mode: {'✅ Faol' if TEST_MODE else '❌ Faol emas'}")
-        logger.info(f"🔤 3 alifbo qo'llab-quvvatlanadi: Lotin, Kiril, Arab")
-        logger.info(f"🖼️ OCR: {'✅ Faol' if OCR_AVAILABLE else '❌ Faol emas'}")
-        logger.info(f"👨‍💼 Admin parol: {ADMIN_PASSWORD}")
+        tasks = self.db.get_user_tasks(user_id, filter_type)
         
-        # Console output
-        print("=" * 60)
-        print("🚀 QOQON MASJIDLAR BOT ISHGA TUSHDI!")
-        print("=" * 60)
-        print(f"📺 Kanal: @{CHANNEL_USERNAME}")
-        print(f"🧪 Test mode: {'✅ Faol' if TEST_MODE else '❌ Production'}")
-        print(f"🔄 Monitoring: Har 2 daqiqada")
-        print(f"🔤 3 alifbo: Lotin, Kiril, Arab")
-        print(f"🖼️ OCR: {'✅ Faol' if OCR_AVAILABLE else '❌ Faol emas'}")
-        print(f"👨‍💼 Admin: '{ADMIN_PASSWORD}' yozing")
-        print(f"🕌 Masjidlar: {len(MASJIDLAR_3_ALIFBO)} ta")
-        print("=" * 60)
+        if not tasks:
+            text = t('no_tasks')
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t('new_task'), callback_data='new_task')],
+                [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+            ])
+        else:
+            text = f"<b>{t('my_tasks')}</b>\n\n"
+            keyboard_buttons = []
+            
+            for task in tasks[:10]:  # Maksimum 10 ta vazifa
+                task_text = task['title']
+                if task.get('pinned'):
+                    task_text = "📌 " + task_text
+                if task['status'] == TaskStatus.DONE.value:
+                    task_text = "✅ " + task_text
+                elif task['priority'] == TaskPriority.URGENT.value:
+                    task_text = "🚨 " + task_text
+                elif task['priority'] == TaskPriority.HIGH.value:
+                    task_text = "🔴 " + task_text
+                
+                keyboard_buttons.append([
+                    InlineKeyboardButton(task_text, callback_data=f"task_view_{task['id']}")
+                ])
+            
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('filter'), callback_data='task_filter'),
+                InlineKeyboardButton(t('new_task'), callback_data='new_task')
+            ])
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('back'), callback_data='back_to_menu')
+            ])
+            
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            
+            # Statistika
+            total = len(tasks)
+            completed = len([t for t in tasks if t['status'] == TaskStatus.DONE.value])
+            in_progress = len([t for t in tasks if t['status'] == TaskStatus.IN_PROGRESS.value])
+            
+            text += f"📊 {t('statistics')}:\n"
+            text += f"• Jami: {total}\n"
+            text += f"• {t('completed')}: {completed}\n"
+            text += f"• {t('status_in_progress')}: {in_progress}\n"
         
-        # Kanal monitoring thread
-        def run_monitoring():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def new_task_start(self, update: Update, context: CallbackContext) -> int:
+        """Yangi vazifa yaratishni boshlash"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        cancel_keyboard = ReplyKeyboardMarkup(
+            [[t('cancel')]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        
+        if update.callback_query:
+            update.callback_query.answer()
+            update.callback_query.message.reply_text(
+                t('enter_task_title'),
+                reply_markup=cancel_keyboard
+            )
+        else:
+            update.message.reply_text(
+                t('enter_task_title'),
+                reply_markup=cancel_keyboard
+            )
+        
+        return WAITING_TASK_TITLE
+    
+    def task_title_received(self, update: Update, context: CallbackContext) -> int:
+        """Vazifa nomini qabul qilish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        if update.message.text == t('cancel'):
+            update.message.reply_text(
+                t('choose_action'),
+                reply_markup=self.get_main_keyboard(user_id)
+            )
+            return ConversationHandler.END
+        
+        context.user_data['task_title'] = update.message.text
+        
+        skip_keyboard = ReplyKeyboardMarkup(
+            [['/skip'], [t('cancel')]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        
+        update.message.reply_text(
+            t('enter_task_desc'),
+            reply_markup=skip_keyboard
+        )
+        
+        return WAITING_TASK_DESC
+    
+    def task_desc_received(self, update: Update, context: CallbackContext) -> int:
+        """Vazifa tavsifini qabul qilish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        if update.message.text == t('cancel'):
+            update.message.reply_text(
+                t('choose_action'),
+                reply_markup=self.get_main_keyboard(user_id)
+            )
+            return ConversationHandler.END
+        
+        if update.message.text != '/skip':
+            context.user_data['task_desc'] = update.message.text
+        else:
+            context.user_data['task_desc'] = None
+        
+        skip_keyboard = ReplyKeyboardMarkup(
+            [['/skip'], [t('cancel')]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        
+        update.message.reply_text(
+            t('enter_deadline') + "\n(Masalan: 25.12.2024)",
+            reply_markup=skip_keyboard
+        )
+        
+        return WAITING_TASK_DEADLINE
+    
+    def task_deadline_received(self, update: Update, context: CallbackContext) -> int:
+        """Vazifa muddatini qabul qilish va yaratish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        if update.message.text == t('cancel'):
+            update.message.reply_text(
+                t('choose_action'),
+                reply_markup=self.get_main_keyboard(user_id)
+            )
+            return ConversationHandler.END
+        
+        deadline = None
+        if update.message.text != '/skip':
             try:
-                logger.info("🔄 Monitoring thread ishga tushdi")
-                loop.run_until_complete(start_channel_monitoring())
-            except Exception as e:
-                logger.error(f"❌ Monitoring thread xatolik: {e}")
-            finally:
-                loop.close()
+                # DD.MM.YYYY formatidan datetime'ga o'tkazish
+                deadline_date = datetime.strptime(update.message.text, '%d.%m.%Y')
+                deadline = deadline_date.isoformat()
+            except ValueError:
+                update.message.reply_text(
+                    "❌ Noto'g'ri format! Iltimos, DD.MM.YYYY formatida kiriting.\nMasalan: 25.12.2024"
+                )
+                return WAITING_TASK_DEADLINE
         
-        monitoring_thread = threading.Thread(target=run_monitoring, daemon=True)
-        monitoring_thread.start()
-        
-        logger.info("✅ Monitoring thread ishga tushirildi")
-        
-        # Bot polling
-        logger.info("🚀 Bot polling boshlandi...")
-        bot_app.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
+        # Vazifani yaratish
+        task_id = self.db.create_task(
+            user_id=user_id,
+            title=context.user_data['task_title'],
+            description=context.user_data.get('task_desc'),
+            deadline=deadline
         )
         
-    except KeyboardInterrupt:
-        logger.info("⏹️ Bot to'xtatildi (Ctrl+C)")
-    except Exception as e:
-        logger.error(f"❌ Bot ishga tushirishda xatolik: {e}")
-        print(f"❌ KRITIK XATOLIK: {e}")
-    finally:
-        print("👋 Bot to'xtatildi")
+        task = self.db.data['tasks'][task_id]
+        task_text = self.format_task(task, user_id, detailed=True)
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(t('change_priority'), callback_data=f'task_priority_{task_id}'),
+                InlineKeyboardButton(t('assign_user'), callback_data=f'task_assign_{task_id}')
+            ],
+            [
+                InlineKeyboardButton(t('add_to_project'), callback_data=f'task_to_project_{task_id}'),
+                InlineKeyboardButton(t('my_tasks'), callback_data='my_tasks')
+            ]
+        ])
+        
+        update.message.reply_text(
+            f"{t('task_created')}\n\n{task_text}",
+            reply_markup=self.get_main_keyboard(user_id),
+            parse_mode=ParseMode.HTML
+        )
+        
+        update.message.reply_text(
+            t('quick_actions'),
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Context'ni tozalash
+        context.user_data.clear()
+        
+        return ConversationHandler.END
+    
+    def callback_handler(self, update: Update, context: CallbackContext):
+        """Callback query handler"""
+        query = update.callback_query
+        user_id = query.from_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        query.answer()
+        
+        # Til o'zgartirish
+        if query.data.startswith('set_lang_'):
+            lang = query.data.replace('set_lang_', '')
+            self.db.set_user_language(user_id, lang)
+            query.edit_message_text(
+                self.get_text(user_id, 'language_changed'),
+                reply_markup=self.get_settings_keyboard(user_id)
+            )
+        
+        # Til menyusi
+        elif query.data == 'change_language':
+            query.edit_message_text(
+                t('choose_language'),
+                reply_markup=self.get_language_keyboard()
+            )
+        
+        # Sozlamalar
+        elif query.data == 'settings':
+            self.show_settings_inline(query, user_id)
+        
+        # Vazifalar
+        elif query.data == 'my_tasks':
+            self.show_tasks(update, context)
+        
+        # Yangi vazifa
+        elif query.data == 'new_task':
+            self.new_task_start(update, context)
+        
+        # Vazifani ko'rish
+        elif query.data.startswith('task_view_'):
+            task_id = query.data.replace('task_view_', '')
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifa statusini o'zgartirish
+        elif query.data.startswith('task_status_'):
+            task_id = query.data.replace('task_status_', '')
+            query.edit_message_reply_markup(
+                reply_markup=self.get_status_keyboard(user_id, task_id)
+            )
+        
+        # Statusni o'rnatish
+        elif query.data.startswith('set_status_'):
+            parts = query.data.split('_')
+            task_id = parts[2]
+            status = parts[3]
+            self.db.update_task(task_id, status=status)
+            query.answer(t('task_updated'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifa prioritetini o'zgartirish
+        elif query.data.startswith('task_priority_'):
+            task_id = query.data.replace('task_priority_', '')
+            query.edit_message_reply_markup(
+                reply_markup=self.get_priority_keyboard(user_id, task_id)
+            )
+        
+        # Prioritetni o'rnatish
+        elif query.data.startswith('set_priority_'):
+            parts = query.data.split('_')
+            task_id = parts[2]
+            priority = parts[3]
+            self.db.update_task(task_id, priority=priority)
+            query.answer(t('task_updated'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifani bajarildi deb belgilash
+        elif query.data.startswith('task_done_'):
+            task_id = query.data.replace('task_done_', '')
+            self.db.update_task(task_id, status=TaskStatus.DONE.value)
+            query.answer(t('task_updated'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifani pinlash
+        elif query.data.startswith('task_pin_'):
+            task_id = query.data.replace('task_pin_', '')
+            self.db.update_task(task_id, pinned=True)
+            query.answer('📌 ' + t('success'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifani unpinlash
+        elif query.data.startswith('task_unpin_'):
+            task_id = query.data.replace('task_unpin_', '')
+            self.db.update_task(task_id, pinned=False)
+            query.answer(t('success'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifani arxivlash
+        elif query.data.startswith('task_archive_'):
+            task_id = query.data.replace('task_archive_', '')
+            self.db.update_task(task_id, archived=True)
+            query.answer('📦 ' + t('success'))
+            self.show_tasks(update, context)
+        
+        # Vazifani arxivdan chiqarish
+        elif query.data.startswith('task_unarchive_'):
+            task_id = query.data.replace('task_unarchive_', '')
+            self.db.update_task(task_id, archived=False)
+            query.answer(t('success'))
+            self.show_task_details(query, user_id, task_id)
+        
+        # Vazifani nusxalash
+        elif query.data.startswith('task_duplicate_'):
+            task_id = query.data.replace('task_duplicate_', '')
+            original_task = self.db.data['tasks'].get(task_id)
+            if original_task:
+                new_task_id = self.db.create_task(
+                    user_id=user_id,
+                    title=original_task['title'] + " (nusxa)",
+                    description=original_task.get('description'),
+                    deadline=original_task.get('deadline')
+                )
+                query.answer(t('success'))
+                self.show_task_details(query, user_id, new_task_id)
+        
+        # Vazifani o'chirish tasdiqlash
+        elif query.data.startswith('task_delete_'):
+            task_id = query.data.replace('task_delete_', '')
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(t('yes'), callback_data=f'confirm_delete_{task_id}'),
+                    InlineKeyboardButton(t('no'), callback_data=f'task_view_{task_id}')
+                ]
+            ])
+            query.edit_message_text(
+                t('confirm_delete'),
+                reply_markup=keyboard
+            )
+        
+        # O'chirishni tasdiqlash
+        elif query.data.startswith('confirm_delete_'):
+            task_id = query.data.replace('confirm_delete_', '')
+            self.db.delete_task(task_id, user_id)
+            query.answer(t('task_deleted'))
+            self.show_tasks(update, context)
+        
+        # Filtr
+        elif query.data == 'task_filter':
+            query.edit_message_reply_markup(
+                reply_markup=self.get_task_filter_keyboard(user_id)
+            )
+        
+        # Filtr turlari
+        elif query.data.startswith('filter_'):
+            filter_type = query.data.replace('filter_', '')
+            self.show_tasks(update, context, filter_type)
+        
+        # Bildirishnomalarni yoqish/o'chirish
+        elif query.data == 'toggle_notifications':
+            user = self.db.get_user(user_id)
+            user['settings']['notifications'] = not user['settings']['notifications']
+            self.db.save_data()
+            query.answer(t('success'))
+            self.show_settings_inline(query, user_id)
+        
+        # Profil
+        elif query.data == 'view_profile':
+            self.show_profile(query, user_id)
+        
+        # Bot haqida
+        elif query.data == 'about_bot':
+            self.show_about(query, user_id)
+        
+        # Fikr bildirish
+        elif query.data == 'send_feedback':
+            query.message.reply_text(t('send_feedback'))
+            return WAITING_FEEDBACK
+        
+        # Asosiy menyuga qaytish
+        elif query.data == 'back_to_menu':
+            query.edit_message_text(
+                t('choose_action'),
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(t('my_tasks'), callback_data='my_tasks'),
+                        InlineKeyboardButton(t('new_task'), callback_data='new_task')
+                    ],
+                    [
+                        InlineKeyboardButton(t('projects'), callback_data='projects'),
+                        InlineKeyboardButton(t('teams'), callback_data='teams')
+                    ],
+                    [
+                        InlineKeyboardButton(t('reports'), callback_data='reports'),
+                        InlineKeyboardButton(t('settings'), callback_data='settings')
+                    ]
+                ])
+            )
+    
+    def show_task_details(self, query: CallbackQuery, user_id: int, task_id: str):
+        """Vazifa tafsilotlarini ko'rsatish"""
+        t = lambda key: self.get_text(user_id, key)
+        task = self.db.data['tasks'].get(task_id)
+        
+        if not task:
+            query.answer(t('error'))
+            return
+        
+        task_text = self.format_task(task, user_id, detailed=True)
+        keyboard = self.get_task_actions_keyboard(user_id, task_id)
+        
+        query.edit_message_text(
+            task_text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+    
+    def show_settings(self, update: Update, context: CallbackContext):
+        """Sozlamalar menyusi"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        text = f"⚙️ <b>{t('settings')}</b>"
+        keyboard = self.get_settings_keyboard(user_id)
+        
+        update.message.reply_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+    
+    def show_settings_inline(self, query: CallbackQuery, user_id: int):
+        """Inline sozlamalar menyusi"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        text = f"⚙️ <b>{t('settings')}</b>"
+        keyboard = self.get_settings_keyboard(user_id)
+        
+        query.edit_message_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+    
+    def show_profile(self, query: CallbackQuery, user_id: int):
+        """Foydalanuvchi profilini ko'rsatish"""
+        t = lambda key: self.get_text(user_id, key)
+        user = self.db.get_user(user_id)
+        
+        # Statistika
+        all_tasks = self.db.get_user_tasks(user_id)
+        completed_tasks = [t for t in all_tasks if t['status'] == TaskStatus.DONE.value]
+        active_tasks = [t for t in all_tasks if t['status'] not in [TaskStatus.DONE.value, TaskStatus.CANCELLED.value]]
+        
+        text = f"""
+👤 <b>{t('profile')}</b>
 
+🆔 User ID: <code>{user_id}</code>
+🌐 {t('language')}: {LANGUAGES[user['settings']['language']]['name']}
+🔔 {t('notifications')}: {'✅' if user['settings']['notifications'] else '❌'}
+
+📊 <b>{t('statistics')}:</b>
+• {t('all_tasks')}: {len(all_tasks)}
+• {t('completed')}: {len(completed_tasks)}
+• Faol vazifalar: {len(active_tasks)}
+• {t('projects')}: {len(user['projects'])}
+• {t('teams')}: {len(user['teams'])}
+        """
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t('back'), callback_data='settings')]
+        ])
+        
+        query.edit_message_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+    
+    def show_about(self, query: CallbackQuery, user_id: int):
+        """Bot haqida ma'lumot"""
+        t = lambda key: self.get_text(user_id, key)
+        
+        text = f"""
+ℹ️ <b>{t('about')}</b>
+
+🤖 <b>Task Management Bot</b>
+Version: 2.0
+
+Bu bot sizga vazifalar, loyihalar va jamoalarni 
+boshqarishda yordam beradi.
+
+✨ <b>Imkoniyatlar:</b>
+• Vazifalarni yaratish va boshqarish
+• Loyihalar bilan ishlash
+• Jamoa a'zolari bilan hamkorlik
+• Deadline eslatmalari
+• Hisobotlar va statistika
+• 3 tilda interfeys
+
+💬 Savollar bo'lsa: @your_support_bot
+        """
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(t('rate_bot'), url='https://t.me/your_bot?start=rate'),
+                InlineKeyboardButton(t('share'), switch_inline_query='Check out this awesome Task Bot!')
+            ],
+            [InlineKeyboardButton(t('back'), callback_data='settings')]
+        ])
+        
+        query.edit_message_text(
+            text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML
+        )
+    
+    def show_projects(self, update: Update, context: CallbackContext):
+        """Loyihalarni ko'rsatish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        projects = self.db.get_user_projects(user_id)
+        
+        if not projects:
+            text = f"📁 <b>{t('projects')}</b>\n\n{t('no_projects')}"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t('new_project'), callback_data='new_project')],
+                [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+            ])
+        else:
+            text = f"📁 <b>{t('projects')}</b>\n\n"
+            keyboard_buttons = []
+            
+            for project in projects:
+                task_count = len(project.get('tasks', []))
+                member_count = len(project.get('members', []))
+                button_text = f"{project['name']} ({task_count} vazifa, {member_count} a'zo)"
+                keyboard_buttons.append([
+                    InlineKeyboardButton(button_text, callback_data=f"project_view_{project['id']}")
+                ])
+            
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('new_project'), callback_data='new_project')
+            ])
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('back'), callback_data='back_to_menu')
+            ])
+            
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def show_teams(self, update: Update, context: CallbackContext):
+        """Jamoalarni ko'rsatish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        teams = self.db.get_user_teams(user_id)
+        
+        if not teams:
+            text = f"👥 <b>{t('teams')}</b>\n\n{t('no_teams')}"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(t('new_team'), callback_data='new_team')],
+                [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+            ])
+        else:
+            text = f"👥 <b>{t('teams')}</b>\n\n"
+            keyboard_buttons = []
+            
+            for team in teams:
+                member_count = len(team.get('members', []))
+                project_count = len(team.get('projects', []))
+                button_text = f"{team['name']} ({member_count} a'zo, {project_count} loyiha)"
+                keyboard_buttons.append([
+                    InlineKeyboardButton(button_text, callback_data=f"team_view_{team['id']}")
+                ])
+            
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('new_team'), callback_data='new_team')
+            ])
+            keyboard_buttons.append([
+                InlineKeyboardButton(t('back'), callback_data='back_to_menu')
+            ])
+            
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def show_today_tasks(self, update: Update, context: CallbackContext):
+        """Bugungi vazifalarni ko'rsatish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        tasks = self.db.get_user_tasks(user_id, 'today')
+        
+        if not tasks:
+            text = f"📌 <b>{t('today_tasks')}</b>\n\n{t('no_tasks')}"
+        else:
+            text = f"📌 <b>{t('today_tasks')}</b>\n\n"
+            for i, task in enumerate(tasks, 1):
+                status_emoji = '✅' if task['status'] == TaskStatus.DONE.value else '⏳'
+                text += f"{i}. {status_emoji} {task['title']}\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(t('all_tasks'), callback_data='my_tasks'),
+                InlineKeyboardButton(t('new_task'), callback_data='new_task')
+            ],
+            [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+        ])
+        
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def show_calendar(self, update: Update, context: CallbackContext):
+        """Kalendar ko'rsatish"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        # Haftaning kunlari bo'yicha vazifalar
+        today = datetime.now().date()
+        week_tasks = {}
+        
+        for i in range(7):
+            date = today + timedelta(days=i)
+            week_tasks[date] = []
+        
+        all_tasks = self.db.get_user_tasks(user_id)
+        for task in all_tasks:
+            if task.get('deadline') and task['status'] != TaskStatus.DONE.value:
+                deadline_date = datetime.fromisoformat(task['deadline']).date()
+                if deadline_date in week_tasks:
+                    week_tasks[deadline_date].append(task)
+        
+        text = f"📅 <b>{t('calendar')}</b>\n\n"
+        
+        for date, tasks in week_tasks.items():
+            if date == today:
+                day_name = t('today')
+            elif date == today + timedelta(days=1):
+                day_name = t('tomorrow')
+            else:
+                day_name = date.strftime('%A')
+            
+            text += f"<b>{day_name} ({date.strftime('%d.%m')})</b>\n"
+            if tasks:
+                for task in tasks:
+                    priority_emoji = '🔴' if task['priority'] in [TaskPriority.HIGH.value, TaskPriority.URGENT.value] else '⚪'
+                    text += f"  {priority_emoji} {task['title']}\n"
+            else:
+                text += f"  {t('no_tasks')}\n"
+            text += "\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(t('today_tasks'), callback_data='today_tasks'),
+                InlineKeyboardButton(t('all_tasks'), callback_data='my_tasks')
+            ],
+            [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+        ])
+        
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def show_reports_menu(self, update: Update, context: CallbackContext):
+        """Hisobotlar menyusi"""
+        user_id = update.effective_user.id
+        t = lambda key: self.get_text(user_id, key)
+        
+        text = f"📊 <b>{t('reports')}</b>\n\n{t('choose_action')}:"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(t('daily_report'), callback_data='report_daily')],
+            [InlineKeyboardButton(t('weekly_report'), callback_data='report_weekly')],
+            [InlineKeyboardButton(t('monthly_report'), callback_data='report_monthly')],
+            [
+                InlineKeyboardButton(t('export'), callback_data='export_data'),
+                InlineKeyboardButton(t('statistics'), callback_data='show_stats')
+            ],
+            [InlineKeyboardButton(t('back'), callback_data='back_to_menu')]
+        ])
+        
+        if update.callback_query:
+            update.callback_query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+    
+    def setup_handlers(self):
+        """Handlerlarni sozlash"""
+        # Komandalar
+        self.dp.add_handler(CommandHandler('start', self.start_handler))
+        self.dp.add_handler(CommandHandler('help', self.help_handler))
+        
+        # Yangi vazifa conversation
+        task_conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler('newtask', self.new_task_start),
+                CallbackQueryHandler(self.new_task_start, pattern='^new_task$')
+            ],
+            states={
+                WAITING_TASK_TITLE: [MessageHandler(Filters.text & ~Filters.command, self.task_title_received)],
+                WAITING_TASK_DESC: [MessageHandler(Filters.text & ~Filters.command, self.task_desc_received)],
+                WAITING_TASK_DEADLINE: [MessageHandler(Filters.text & ~Filters.command, self.task_deadline_received)]
+            },
+            fallbacks=[CommandHandler('cancel', lambda u, c: ConversationHandler.END)]
+        )
+        self.dp.add_handler(task_conv_handler)
+        
+        # Callback queries
+        self.dp.add_handler(CallbackQueryHandler(self.callback_handler))
+        
+        # Matnli xabarlar
+        self.dp.add_handler(MessageHandler(Filters.text & ~Filters.command, self.text_handler))
+    
+    def run(self):
+        """Botni ishga tushirish"""
+        logger.info("Bot ishga tushmoqda...")
+        self.updater.start_polling()
+        self.updater.idle()
+
+
+# Asosiy qism
 if __name__ == '__main__':
-    main()
+    # Bot tokenini o'rnating
+    TOKEN = "YOUR_BOT_TOKEN_HERE"  # BotFather'dan olingan token
+    
+    if TOKEN == "YOUR_BOT_TOKEN_HERE":
+        print("⚠️ Iltimos, bot tokenini kiriting!")
+        print("1. Telegram'da @BotFather'ga yozing")
+        print("2. /newbot komandasi bilan yangi bot yarating")
+        print("3. Olingan tokenni TOKEN o'zgaruvchisiga yozing")
+    else:
+        bot = TaskBot(TOKEN)
+        bot.run()
