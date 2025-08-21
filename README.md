@@ -1,26 +1,31 @@
-# Namoz Vaqti Bot — Test
+# Telegram Task Bot
 
-Ushbu branch/test kodi `@namozvaqtitest` kanalidan *API ishlatmasdan* (t.me/s/ orqali) namoz vaqtlarini oladi. 
-Matn topilsa — matndan, topilmasa — postdagi rasm(lar)dan **OCR** orqali (Lotin/Kiril/Arab) vaqtlarni chiqaradi.
+Oddiy Telegram bot — xodimlarga vazifalar berish va ularni yakunlashni nazorat qilish uchun.
 
 ## O‘rnatish
-1) Python 3.10+
-2) `.env` fayl yarating:
-```
-BOT_TOKEN=YOUR_ROTATED_TEST_BOT_TOKEN
-CHANNEL_URL=https://t.me/s/namozvaqtitest
-```
-3) Kutubxonalar:
-```
-pip install -r requirements-2.txt
-```
-4) Ishga tushirish:
-```
-python bot-3.py
-```
+
+1. GitHub’dan klon qiling:
+   ```bash
+   git clone https://github.com/username/telegram-task-bot.git
+   cd telegram-task-bot
+   ```
+
+2. Kutubxonalarni o‘rnating:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. `.env` faylda yoki Render sozlamalarida tokenni belgilang:
+   ```
+   BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+   ```
+
+4. Render’da deploy qilish:
+   - New Web Service → Python → GitHub repo
+   - `Procfile` avtomatik ishlaydi
+   - Environment variables: `BOT_TOKEN`
 
 ## Buyruqlar
-- `/jadval` — barcha masjidlar jadvali
-- `/vaqt <qidiruv>` — masjid nomi bo‘yicha filter
-
-> Eslatma: OCR modeli birinchi ishga tushishda yuklanadi, kichik kechikish normal.
+- `/start` – boshlash
+- `/vazifalar` – vazifalar ro‘yxati
+- `/yakunlash` – vazifani tugallash
