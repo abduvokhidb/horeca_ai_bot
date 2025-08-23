@@ -37,9 +37,11 @@ logging.basicConfig(
 logger = logging.getLogger("taskbot")
 
 # ------------------ Global holat ------------------
-# ⚠️ Asl xato: Database() ga 'path' berilmagan edi → tuzatildi (Config.DB_PATH)
-db = Database(getattr(Config, "DB_PATH", "taskbot.db"))  # SQLite wrapper (sizning database.py ichida)
-TZ = ZoneInfo(Config.TIMEZONE)
+# ⚠️ Asl xato: Database() ga 'path' berilmagan edi → tuzatildi (Config.DATABASE_PATH)
+db = Database(getattr(Config, "DATABASE_PATH", "taskbot.db"))  # SQLite wrapper (sizning database.py ichida)
+
+# ⚠️ Asl xato: Config.TIMEZONE allaqachon ZoneInfo bo‘lishi mumkin — qayta o‘ramaymiz
+TZ = Config.TIMEZONE if isinstance(Config.TIMEZONE, ZoneInfo) else ZoneInfo(str(Config.TIMEZONE))
 
 # Kunlik vaqtlardan foydalanish (tzinfo = Application.timezone orqali o‘rnatiladi)
 def parse_hhmm(s: str, default: str) -> time:
@@ -164,7 +166,8 @@ async def cb_emp_list(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: 
     lines = []
     for e in emps:
         lines.append(f"• @{e.get('username') or '-'} — {e.get('full_name') or '-'} (ID: {e['telegram_id']})")
-    await update.effective_chat.send_message("\n".ing(join(lines)), reply_markup=employees_menu_kb(lang))
+    # FIX: .ing -> .join
+    await update.effective_chat.send_message("\n".join(lines), reply_markup=employees_menu_kb(lang))
 
 async def ask_emp_add(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str):
     context.user_data["awaiting_emp_add"] = True
