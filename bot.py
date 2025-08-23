@@ -26,7 +26,7 @@ from telegram.ext import (
 # Ichki modullar
 from config import Config
 from database import Database
-from languages import T  # T(lang, key, **kwargs) -> matn
+from languages import t as T  # T(lang, key, **kwargs) -> matn
 
 # ------------------ Loglash ------------------
 LOG_LEVEL = getattr(logging, getattr(Config, "LOG_LEVEL", "INFO").upper(), logging.INFO)
