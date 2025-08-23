@@ -1,7 +1,0 @@
-# Core dependencies
-python-telegram-bot==20.7
-python-dotenv==1.0.0
-pytz==2024.1
-
-# Optional: for scheduled tasks
-APScheduler==3.10.4
