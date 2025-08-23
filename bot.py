@@ -44,16 +44,27 @@ db = Database(getattr(Config, "DATABASE_PATH", "taskbot.db"))  # SQLite wrapper 
 TZ = Config.TIMEZONE if isinstance(Config.TIMEZONE, ZoneInfo) else ZoneInfo(str(Config.TIMEZONE))
 
 # Kunlik vaqtlardan foydalanish (tzinfo = Application.timezone orqali o‘rnatiladi)
-def parse_hhmm(s: str, default: str) -> time:
+def to_time(v, default_str: str) -> time:
+    """Config dan keladigan 'HH:MM'/'HH:MM:SS' str yoki time obyektini time ga aylantiradi."""
+    if isinstance(v, time):
+        return v
+    s = str(v or default_str)
     try:
-        hh, mm = map(int, (s or default).split(":"))
-        return time(hh, mm)
+        parts = s.split(":")
+        if len(parts) >= 2:
+            hh = int(parts[0])
+            mm = int(parts[1])
+            # soniyalar bo‘lsa ham qabul qilamiz
+            return time(hh, mm)
     except Exception:
-        return time(*map(int, default.split(":")))
+        pass
+    # defaultga qaytamiz
+    p = default_str.split(":")
+    return time(int(p[0]), int(p[1]))
 
-MORNING_TIME = parse_hhmm(getattr(Config, "MORNING_REMINDER", "09:00"), "09:00")
-EVENING_TIME = parse_hhmm(getattr(Config, "EVENING_REMINDER", "18:00"), "18:00")
-REPORT_TIME  = parse_hhmm(getattr(Config, "DAILY_REPORT_TIME", "18:00"), "18:00")
+MORNING_TIME = to_time(getattr(Config, "MORNING_REMINDER", "09:00"), "09:00")
+EVENING_TIME = to_time(getattr(Config, "EVENING_REMINDER", "18:00"), "18:00")
+REPORT_TIME  = to_time(getattr(Config, "DAILY_REPORT_TIME", "18:00"), "18:00")
 
 # ------------------ Foydali yordamchilar ------------------
 def is_manager(user) -> bool:
@@ -139,7 +150,7 @@ async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await ensure_user(update, context)
     lang = u.get("language", "uz")
     kb_lang = kb([
-        [("🇺🇿 O‘zbek", "lang:uz"), ("🇷🇺 Русский", "lang:ru"), ("🇰🇿 Қазақ", "lang:kz")],
+        [("🇺🇿 O‘zbek", "lang:uz"), ("🇷🇺 Русский", "lang:ru"), ("🇰🇿 Қазақша", "lang:kk")],
         [(T(lang, "btn_back"), "back:home")]
     ])
     await update.effective_chat.send_message(T(lang, "choose_language"), reply_markup=kb_lang)
