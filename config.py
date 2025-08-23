@@ -1,4 +1,3 @@
-
 import os
 from dataclasses import dataclass
 from datetime import time
@@ -13,7 +12,7 @@ class Config:
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "taskbot.db")
+    DATABASE_PATH: str = os.getenv("DATABASE_PATH", "taskbot.db")   # ✅ Database uchun path
     MANAGER_USERNAMES: str = os.getenv("MANAGER_USERNAMES", "")
     MANAGER_IDS: str = os.getenv("MANAGER_IDS", "")
     TIMEZONE: ZoneInfo = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tashkent"))
