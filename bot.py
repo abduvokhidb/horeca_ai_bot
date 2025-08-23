@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger("taskbot")
 
 # ------------------ Global holat ------------------
-db = Database()  # SQLite wrapper (sizning database.py ichida)
+from config import Config  db = Database(getattr(Config, "DB_PATH", "taskbot.db"))  # SQLite wrapper (sizning database.py ichida)
 TZ = ZoneInfo(Config.TIMEZONE)
 
 # Kunlik vaqtlardan foydalanish (tzinfo = Application.timezone orqali o‘rnatiladi)
