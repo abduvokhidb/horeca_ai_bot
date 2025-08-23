@@ -26,7 +26,7 @@ from telegram.ext import (
 # Ichki modullar
 from config import Config
 from database import Database
-from languages import t as T  # T(lang, key, **kwargs) -> matn
+from languages import T  # T(lang, key, **kwargs) -> matn
 
 # ------------------ Loglash ------------------
 LOG_LEVEL = getattr(logging, getattr(Config, "LOG_LEVEL", "INFO").upper(), logging.INFO)
@@ -37,7 +37,8 @@ logging.basicConfig(
 logger = logging.getLogger("taskbot")
 
 # ------------------ Global holat ------------------
-from config import Config  db = Database(getattr(Config, "DB_PATH", "taskbot.db"))  # SQLite wrapper (sizning database.py ichida)
+# ⚠️ Asl xato: Database() ga 'path' berilmagan edi → tuzatildi (Config.DB_PATH)
+db = Database(getattr(Config, "DB_PATH", "taskbot.db"))  # SQLite wrapper (sizning database.py ichida)
 TZ = ZoneInfo(Config.TIMEZONE)
 
 # Kunlik vaqtlardan foydalanish (tzinfo = Application.timezone orqali o‘rnatiladi)
@@ -163,7 +164,7 @@ async def cb_emp_list(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: 
     lines = []
     for e in emps:
         lines.append(f"• @{e.get('username') or '-'} — {e.get('full_name') or '-'} (ID: {e['telegram_id']})")
-    await update.effective_chat.send_message("\n".join(lines), reply_markup=employees_menu_kb(lang))
+    await update.effective_chat.send_message("\n".ing(join(lines)), reply_markup=employees_menu_kb(lang))
 
 async def ask_emp_add(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str):
     context.user_data["awaiting_emp_add"] = True
