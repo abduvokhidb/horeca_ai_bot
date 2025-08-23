@@ -1,4 +1,3 @@
-
 STRINGS = {
     "uz": {
         "role_manager": "MENEJER",
@@ -200,3 +199,87 @@ def T(lang: str, key: str, **kwargs) -> str:
 
 # Moslik uchun kichik harfni ham qoldiramiz
 t = T
+
+
+# === ALIASES & MISSING KEYS PATCH (bot.py bilan 1:1 moslash) ===
+def _alias(lang: str, src: str, dst: str):
+    if lang in STRINGS and src in STRINGS[lang] and dst not in STRINGS[lang]:
+        STRINGS[lang][dst] = STRINGS[lang][src]
+
+def _ensure(lang: str, key: str, value: str):
+    if lang in STRINGS and key not in STRINGS[lang]:
+        STRINGS[lang][key] = value
+
+for lg in ("uz", "ru", "kk"):
+    # btn_mytasks ← btn_my_tasks
+    _alias(lg, "btn_my_tasks", "btn_mytasks")
+    # btn_report_today ← btn_send_report
+    _alias(lg, "btn_send_report", "btn_report_today")
+    # employees_title ← employees_menu_title
+    _alias(lg, "employees_menu_title", "employees_title")
+    # btn_emp_* ← btn_employee_*
+    _alias(lg, "btn_employees_list", "btn_emp_list")
+    _alias(lg, "btn_employee_add", "btn_emp_add")
+    _alias(lg, "btn_employee_remove", "btn_emp_remove")
+    # employees_empty ← no_employees
+    _alias(lg, "no_employees", "employees_empty")
+    # language_set ← lang_set_ok
+    _alias(lg, "lang_set_ok", "language_set")
+    # task_assigned ← task_assigned_to
+    _alias(lg, "task_assigned_to", "task_assigned")
+    # task_usage ← assign_task_prompt
+    _alias(lg, "assign_task_prompt", "task_usage")
+    # reminder_* ← daily_*
+    _alias(lg, "daily_morning", "reminder_morning")
+    _alias(lg, "daily_evening", "reminder_evening")
+    # deadline_ping ← deadline_soon
+    _alias(lg, "deadline_soon", "deadline_ping")
+
+# Yo‘q bo‘lsa — default qiymatlarni qo‘shamiz
+_ensure("uz", "btn_back", "◀️ Orqaga")
+_ensure("ru", "btn_back", "◀️ Назад")
+_ensure("kk", "btn_back", "◀️ Артқа")
+
+_ensure("uz", "emp_add_hint", "Hodim qo‘shish uchun @username yuboring (masalan, @ali).")
+_ensure("ru", "emp_add_hint", "Чтобы добавить сотрудника, отправьте @username (например, @ivan).")
+_ensure("kk", "emp_add_hint", "Қызметкер қосу үшін @username жіберіңіз (мысалы, @aidos).")
+
+_ensure("uz", "emp_remove_hint", "O‘chirish uchun ham @username yuboring.")
+_ensure("ru", "emp_remove_hint", "Для удаления также отправьте @username.")
+_ensure("kk", "emp_remove_hint", "Жою үшін де @username жіберіңіз.")
+
+_ensure("uz", "emp_added", "✅ @{username} qo‘shildi.\nTaklif: {link}")
+_ensure("ru", "emp_added", "✅ @{username} добавлен.\nИнвайт: {link}")
+_ensure("kk", "emp_added", "✅ @{username} қосылды.\nШақыру: {link}")
+
+_ensure("uz", "emp_add_fail", "❌ @{username} qo‘shib bo‘lmadi.")
+_ensure("ru", "emp_add_fail", "❌ Не удалось добавить @{username}.")
+_ensure("kk", "emp_add_fail", "❌ @{username} қосу мүмкін болмады.")
+
+_ensure("uz", "emp_removed", "✅ @{username} o‘chirildi.")
+_ensure("ru", "emp_removed", "✅ @{username} удалён.")
+_ensure("kk", "emp_removed", "✅ @{username} жойылды.")
+
+_ensure("uz", "emp_remove_fail", "❌ @{username} topilmadi.")
+_ensure("ru", "emp_remove_fail", "❌ @{username} не найден.")
+_ensure("kk", "emp_remove_fail", "❌ @{username} табылмады.")
+
+_ensure("uz", "only_manager", "Kechirasiz, bu buyruq faqat menejerlar uchun.")
+_ensure("ru", "only_manager", "Извините, команда доступна только менеджерам.")
+_ensure("kk", "only_manager", "Кешіріңіз, бұл бұйрық тек менеджерлерге арналған.")
+
+_ensure("uz", "task_created", "✅ Vazifa yaratildi (ID: {task_id}).")
+_ensure("ru", "task_created", "✅ Задача создана (ID: {task_id}).")
+_ensure("kk", "task_created", "✅ Тапсырма құрылды (ID: {task_id}).")
+
+_ensure("uz", "done_usage", "Foydalanish: /done <task_id>")
+_ensure("ru", "done_usage", "Использование: /done <task_id>")
+_ensure("kk", "done_usage", "Пайдалану: /done <task_id>")
+
+_ensure("uz", "done_ok", "✅ #{task_id} vazifasi bajarildi!")
+_ensure("ru", "done_ok", "✅ Задача #{task_id} выполнена!")
+_ensure("kk", "done_ok", "✅ #{task_id} тапсырмасы орындалды!")
+
+_ensure("uz", "done_fail", "❌ #{task_id} topilmadi yoki sizga tegishli emas.")
+_ensure("ru", "done_fail", "❌ #{task_id} не найдено или не принадлежит вам.")
+_ensure("kk", "done_fail", "❌ #{task_id} табылмады немесе сізге тиесілі емес.")
