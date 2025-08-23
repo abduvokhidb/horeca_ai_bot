@@ -43,7 +43,7 @@ db = Database(getattr(Config, "DATABASE_PATH", "taskbot.db"))  # SQLite wrapper 
 # ⚠️ Asl xato: Config.TIMEZONE allaqachon ZoneInfo bo‘lishi mumkin — qayta o‘ramaymiz
 TZ = Config.TIMEZONE if isinstance(Config.TIMEZONE, ZoneInfo) else ZoneInfo(str(Config.TIMEZONE))
 
-# Kunlik vaqtlardan foydalanish (tzinfo = Application.timezone orqali o‘rnatiladi)
+# Kunlik vaqtlardan foydalanish (tzinfo = JobQueue.set_timezone orqali o‘rnatiladi)
 def to_time(v, default_str: str) -> time:
     """Config dan keladigan 'HH:MM'/'HH:MM:SS' str yoki time obyektini time ga aylantiradi."""
     if isinstance(v, time):
@@ -54,11 +54,9 @@ def to_time(v, default_str: str) -> time:
         if len(parts) >= 2:
             hh = int(parts[0])
             mm = int(parts[1])
-            # soniyalar bo‘lsa ham qabul qilamiz
             return time(hh, mm)
     except Exception:
         pass
-    # defaultga qaytamiz
     p = default_str.split(":")
     return time(int(p[0]), int(p[1]))
 
@@ -150,7 +148,7 @@ async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await ensure_user(update, context)
     lang = u.get("language", "uz")
     kb_lang = kb([
-        [("🇺🇿 O‘zbek", "lang:uz"), ("🇷🇺 Русский", "lang:ru"), ("🇰🇿 Қазақша", "lang:kk")],
+        [("🇺🇿 O‘zbek", "lang:uz"), ("🇷🇺 Русский", "lang:ru"), ("🇰🇿 Қазақша", "lang:kk")],  # FIX: lang:kk
         [(T(lang, "btn_back"), "back:home")]
     ])
     await update.effective_chat.send_message(T(lang, "choose_language"), reply_markup=kb_lang)
@@ -466,7 +464,7 @@ async def schedule_task_deadline(app: Application, task_id: int):
         dt = datetime.fromisoformat(task["deadline"])
     except Exception:
         return
-    # Agar naive bo‘lsa, Application.timezone (TZ) default sifatida ishlatiladi.
+    # Agar naive bo‘lsa, JobQueue timezone ishlatiladi.
     for j in app.job_queue.get_jobs_by_name(f"deadline_{task_id}"):
         j.schedule_removal()
     app.job_queue.run_once(
@@ -518,6 +516,58 @@ async def daily_manager_report(app: Application):
         except Exception as e:
             logger.warning("Manager report failed: %s", e)
 
+# ------------------ Post-init: ishga tushganda rejalashtirish ------------------
+async def on_start(app: Application):
+    # FIX: PTB v21.6 da ApplicationBuilder.timezone() yo‘q -> JobQueue ga timezone qo‘yiladi
+    if app.job_queue:
+        try:
+            # v21+ da mavjud
+            app.job_queue.set_timezone(TZ)
+        except Exception:
+            # Fallback (kamdan-kam kerak bo‘ladi)
+            try:
+                app.job_queue.scheduler.configure(timezone=TZ)  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Timezone set failed: %s", e)
+    await schedule_user_jobs(app)
+    await schedule_daily_manager_report(app)
+    logger.info("Startup scheduling done")
+
+# ------------------ Application builder ------------------
+def build_application() -> Application:
+    app = (
+        Application
+        .builder()
+        .token(Config.TELEGRAM_BOT_TOKEN)
+        # .timezone(TZ)  # FIX: PTB v21.6 da mavjud emas
+        .post_init(on_start)
+        .build()
+    )
+
+    # Handlers
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("language", cmd_language))
+
+    # Manager
+    app.add_handler(CommandHandler("task", cmd_task))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("report", cmd_report))
+
+    # Employee
+    app.add_handler(CommandHandler("mytasks", cmd_mytasks))
+    app.add_handler(CommandHandler("done", cmd_done))
+
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(on_callback))
+
+    # Text router (hodim qo‘shish/uchirish uchun kutilgan holatlar)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+
+    # Voice (manager uchun task yaratish)
+    app.add_handler(MessageHandler(filters.VOICE, on_voice))
+
+    return app
+
 # ------------------ Callbacks router ------------------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
@@ -562,47 +612,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_chat.send_message(
             text, reply_markup=manager_home_kb(lang) if role == "MANAGER" else employee_home_kb(lang)
         )
-
-# ------------------ Post-init: ishga tushganda rejalashtirish ------------------
-async def on_start(app: Application):
-    await schedule_user_jobs(app)
-    await schedule_daily_manager_report(app)
-    logger.info("Startup scheduling done")
-
-# ------------------ Application builder ------------------
-def build_application() -> Application:
-    app = (
-        Application
-        .builder()
-        .token(Config.TELEGRAM_BOT_TOKEN)
-        .timezone(TZ)  # MUHIM: PTB v21 uchun default tz
-        .post_init(on_start)
-        .build()
-    )
-
-    # Handlers
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("language", cmd_language))
-
-    # Manager
-    app.add_handler(CommandHandler("task", cmd_task))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("report", cmd_report))
-
-    # Employee
-    app.add_handler(CommandHandler("mytasks", cmd_mytasks))
-    app.add_handler(CommandHandler("done", cmd_done))
-
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(on_callback))
-
-    # Text router (hodim qo‘shish/uchirish uchun kutilgan holatlar)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-
-    # Voice (manager uchun task yaratish)
-    app.add_handler(MessageHandler(filters.VOICE, on_voice))
-
-    return app
 
 # ------------------ main ------------------
 def main():
