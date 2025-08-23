@@ -190,7 +190,7 @@ STRINGS = {
 
 DEFAULT_LANG = "uz"
 
-def T(lang: str, key: str, **kwargs) -> str:   # 🔥 katta harf bilan
+def T(lang: str, key: str, **kwargs) -> str:
     lang = lang if lang in STRINGS else DEFAULT_LANG
     s = STRINGS[lang].get(key) or STRINGS[DEFAULT_LANG].get(key) or key
     try:
@@ -200,4 +200,3 @@ def T(lang: str, key: str, **kwargs) -> str:   # 🔥 katta harf bilan
 
 # Moslik uchun kichik harfni ham qoldiramiz
 t = T
-        return s
