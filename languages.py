@@ -9,7 +9,7 @@ STRINGS = {
         "welcome_employee": "Assalomu alaykum! Bu sizning shaxsiy ish panelingiz.",
         "welcome_invite_required": "Hodimlar botdan foydalanishi uchun admin tomonidan INVITE havola beriladi.\nQuyidagi tugma orqali so‘rov yuborishingiz mumkin.",
 
-        # --- Main buttons / Menus ---
+        # --- Main buttons / Menus (matn sifatida ham kerak bo‘lishi mumkin) ---
         "btn_assign_task": "📝 Vazifa berish",
         "btn_status": "📊 Holat",
         "btn_reports": "🧾 Hisobotlar",
@@ -28,9 +28,9 @@ STRINGS = {
         "btn_set_lang_kk": "🇰🇿 Қазақша",
         "choose_language": "Tilni tanlang:",
         "lang_set_ok": "Til o‘rnatildi: {lang}",
-        "language_set": "Til o‘rnatildi: {lang}",  # alias
+        "language_set": "Til o‘rnatildi: {lang}",
 
-        # --- Generic guards / help ---
+        # --- Guards / help ---
         "only_private": "Iltimos, botdan faqat shaxsiy chatda foydalaning.",
         "not_authorized": "Kechirasiz, bu buyruq faqat menejerlar uchun.",
         "only_manager": "Kechirasiz, bu buyruq faqat menejerlar uchun.",
@@ -65,23 +65,20 @@ STRINGS = {
         "emp_added": "✅ @{username} qo‘shildi.\nTaklif: {link}",
         "emp_add_fail": "❌ @{username} qo‘shib bo‘lmadi.",
 
-        # --- Invites (new UX) ---
+        # --- Invites (admin panel) ---
         "btn_request_invite": "🔗 Invite so‘rash",
         "invite_ask_username_fullname": "Invite so‘rovi uchun @username va Ismingizni yuboring.\nMasalan: @whoop_uz Abduvohid",
         "invite_request_saved": "✅ So‘rovingiz qabul qilindi. Administrator tasdiqlashi bilan xabar olasiz.",
         "invite_request_exists": "ℹ️ Sizda faol invite so‘rovi bor. Administrator qarorini kuting.",
         "btn_admin_invites": "📨 Invites",
         "invites_title": "Invites so‘rovlari:",
+        "pending_invites_title": "🧾 Pending invites:",
         "invites_empty": "Hozircha yangi invite so‘rovlari yo‘q.",
         "invite_row": "• #{id} @{username} — {full_name} — holat: {status}",
         "btn_invite_accept": "✅ Qabul qilish",
         "btn_invite_reject": "❌ Rad etish",
         "invite_accept_ok": "✅ Invite so‘rovi tasdiqlandi.",
         "invite_reject_ok": "❌ Invite so‘rovi rad etildi.",
-
-        # --- Uniqueness (names) ---
-        "username_conflict": "❌ Bu username allaqachon mavjud.",
-        "fullname_conflict": "❌ Bu ism juda o‘xshash. Iltimos, aniqroq variant kiriting (masalan, familiya bilan).",
 
         # --- Tasks (creation / lines / statuses) ---
         "task_assigned_to": "Yangi vazifa: {title}\nMuddat: {deadline}\nUstuvorlik: {priority}",
@@ -93,7 +90,7 @@ STRINGS = {
         "task_line": "• #{id} [{priority}] {title} — holat: {status}, muddat: {deadline}",
         "task_controls": "Vazifa #{task_id}\n{title}\nMuddat: {deadline}\nUstuvorlik: {priority}",
 
-        # --- Task inline buttons (employee) ---
+        # --- Task inline buttons (employee side) ---
         "btn_task_accept": "👍 Qabul qilish",
         "btn_task_reject": "👎 Rad etish",
         "btn_task_done": "✔️ Bajarildi",
@@ -105,7 +102,7 @@ STRINGS = {
         "task_done_ok": "✅ #{task_id} vazifasi bajarildi!",
         "task_done_notify_manager": "Xodim @{username} #{task_id} vazifasini tugatdi.",
 
-        # --- Manager notifications on changes ---
+        # --- Notifications to manager on changes ---
         "notify_task_accepted": "👤 @{username} #{task_id} vazifasini QABUL QILDI.",
         "notify_task_rejected": "👤 @{username} #{task_id} vazifasini RAD QILDI. Sabab: {reason}",
         "notify_task_done": "👤 @{username} #{task_id} vazifasini BAJARDI.",
@@ -207,15 +204,13 @@ STRINGS = {
         "invite_request_exists": "ℹ️ У вас уже есть активный запрос. Ожидайте решения.",
         "btn_admin_invites": "📨 Инвайты",
         "invites_title": "Запросы инвайтов:",
+        "pending_invites_title": "🧾 Pending invites:",
         "invites_empty": "Новых запросов нет.",
         "invite_row": "• #{id} @{username} — {full_name} — статус: {status}",
         "btn_invite_accept": "✅ Принять",
         "btn_invite_reject": "❌ Отклонить",
         "invite_accept_ok": "✅ Запрос одобрен.",
         "invite_reject_ok": "❌ Запрос отклонён.",
-
-        "username_conflict": "❌ Этот username уже используется.",
-        "fullname_conflict": "❌ Имя слишком похоже. Уточните (например, с фамилией).",
 
         "task_assigned_to": "Новая задача: {title}\nДедлайн: {deadline}\nПриоритет: {priority}",
         "task_assigned": "Новая задача: {title}\nДедлайн: {deadline}\nПриоритет: {priority}",
@@ -334,15 +329,13 @@ STRINGS = {
         "invite_request_exists": "ℹ️ Белсенді сұрауыңыз бар. Шешімді күтіңіз.",
         "btn_admin_invites": "📨 Шақырулар",
         "invites_title": "Шақыру сұраулары:",
+        "pending_invites_title": "🧾 Pending invites:",
         "invites_empty": "Жаңа сұраулар жоқ.",
         "invite_row": "• #{id} @{username} — {full_name} — күйі: {status}",
         "btn_invite_accept": "✅ Қабылдау",
         "btn_invite_reject": "❌ Қайтару",
         "invite_accept_ok": "✅ Сұрау қабылданды.",
         "invite_reject_ok": "❌ Сұрау қайтарылды.",
-
-        "username_conflict": "❌ Бұл username бұрыннан бар.",
-        "fullname_conflict": "❌ Бұл есім тым ұқсас. Нақтырақ нұсқа енгізіңіз (мысалы, тегімен).",
 
         "task_assigned_to": "Жаңа тапсырма: {title}\nДедлайн: {deadline}\nБасымдылық: {priority}",
         "task_assigned": "Жаңа тапсырма: {title}\nДедлайн: {deadline}\nБасымдылық: {priority}",
@@ -400,6 +393,7 @@ STRINGS = {
 DEFAULT_LANG = "uz"
 
 def T(lang: str, key: str, **kwargs) -> str:
+    """Matnni i18n lug‘atdan oladi. Noma’lum key bo‘lsa, default til yoki key qaytadi."""
     lang = lang if lang in STRINGS else DEFAULT_LANG
     s = STRINGS[lang].get(key) or STRINGS[DEFAULT_LANG].get(key) or key
     try:
@@ -407,11 +401,10 @@ def T(lang: str, key: str, **kwargs) -> str:
     except Exception:
         return s
 
-# Moslik uchun kichik harfni ham qoldiramiz
+# Kichik alias (compat)
 t = T
 
-
-# === ALIASES & PATCHES (orqaga moslik uchun) ===
+# === ALIASES & PATCHES (backward compatibility) ===
 def _alias(lang: str, src: str, dst: str):
     if lang in STRINGS and src in STRINGS[lang] and dst not in STRINGS[lang]:
         STRINGS[lang][dst] = STRINGS[lang][src]
@@ -435,7 +428,7 @@ for lg in ("uz", "ru", "kk"):
     _alias(lg, "daily_evening", "reminder_evening")
     _alias(lg, "deadline_soon", "deadline_ping")
 
-# Minimal default fallbacks (agar kerak bo‘lib qolsa)
+# Minimal fallbacks
 _ensure("uz", "btn_back", "◀️ Orqaga")
 _ensure("ru", "btn_back", "◀️ Назад")
 _ensure("kk", "btn_back", "◀️ Артқа")
