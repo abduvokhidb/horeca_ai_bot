@@ -1,6 +1,6 @@
-# bot.py — PTB v21.6
-import asyncio, logging, os, re
-from datetime import datetime, time, timedelta
+# bot.py — PTB v21.6, TASKBOTAI (pending → approve oqimi bilan)
+import asyncio, logging, os, re, sqlite3
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from typing import List, Optional
 
@@ -18,10 +18,12 @@ from config import Config
 from database import Database
 from languages import T
 
+# ---------- Logging ----------
 LOG_LEVEL = getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO)
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("taskbot")
 
+# ---------- Globals ----------
 db = Database(Config.DATABASE_PATH)
 TZ: ZoneInfo = Config.TIMEZONE
 
@@ -37,16 +39,70 @@ MORNING_TIME = _to_time(Config.MORNING_REMINDER, "09:00")
 EVENING_TIME = _to_time(Config.EVENING_REMINDER, "18:00")
 REPORT_TIME  = _to_time(Config.DAILY_REPORT_TIME, "18:00")
 
-# Reply-keyboard labels
-LBL_TASK      = "📝 Vazifa berish"
-LBL_STATUS    = "📊 Holat"
-LBL_REPORTS   = "🧾 Hisobotlar"
-LBL_EMPLOYEES = "👤 Hodimlar"
-LBL_INVITES   = "📨 So‘rovlar"
-LBL_LANG      = "🌐 Til"
-LBL_MY_TASKS  = "✅ Mening vazifalarim"
-LBL_SEND_REP  = "🧾 Hisobot yuborish"
+# ---------- Multilang helpers ----------
+def LM(lang: str, key: str, defaults: dict, **kwargs) -> str:
+    """
+    Multi-language safe lookup:
+    1) Try languages.py (T)
+    2) Fallback to provided defaults dict {'uz':..., 'ru':..., 'kk':...}
+    """
+    s = T(lang, key, **kwargs)
+    if s != key:
+        return s
+    base = defaults.get(lang) or defaults.get("uz") or ""
+    try:
+        return base.format(**kwargs)
+    except Exception:
+        return base
 
+# Button labels (3 tilda ishlash uchun defaults)
+LBL = {
+    "assign": {"uz":"📝 Vazifa berish", "ru":"📝 Назначить", "kk":"📝 Тапсырма беру"},
+    "status": {"uz":"📊 Holat", "ru":"📊 Статус", "kk":"📊 Күй"},
+    "reports": {"uz":"🧾 Hisobotlar", "ru":"🧾 Отчёты", "kk":"🧾 Есептер"},
+    "employees": {"uz":"👤 Hodimlar", "ru":"👤 Сотрудники", "kk":"👤 Қызметкерлер"},
+    "invites": {"uz":"📨 So‘rovlar", "ru":"📨 Запросы", "kk":"📨 Сұраулар"},
+    "lang": {"uz":"🌐 Til", "ru":"🌐 Язык", "kk":"🌐 Тіл"},
+    "mytasks": {"uz":"✅ Mening vazifalarim", "ru":"✅ Мои задачи", "kk":"✅ Менің тапсырмаларым"},
+    "sendrep": {"uz":"🧾 Hisobot yuborish", "ru":"🧾 Отчёт", "kk":"🧾 Есеп"},
+    "back": {"uz":"◀️ Orqaga", "ru":"◀️ Назад", "kk":"◀️ Артқа"},
+    "refresh": {"uz":"🔄 Statusni tekshirish", "ru":"🔄 Проверить статус", "kk":"🔄 Статусты тексеру"},
+}
+
+# Pending flow texts
+TXT_PENDING_INFO = {
+    "uz": "🕒 So‘rovingiz *admin tasdig‘ida*. Tasdiqlangach, panel ochiladi.",
+    "ru": "🕒 Ваша заявка *ожидает одобрения*. После одобрения панель откроется.",
+    "kk": "🕒 Сұрауыңыз *мақұлдауды күтуде*. Мақұлданған соң панель ашылады.",
+}
+TXT_NEW_REQ = {
+    "uz": "🆕 Yangi so‘rov: @{username} — {full_name}\nID: {uid}",
+    "ru": "🆕 Новый запрос: @{username} — {full_name}\nID: {uid}",
+    "kk": "🆕 Жаңа сұрау: @{username} — {full_name}\nID: {uid}",
+}
+TXT_APPROVED_USER = {
+    "uz": "✅ Siz tasdiqlandingiz! Endi paneldan foydalanishingiz mumkin.",
+    "ru": "✅ Вас одобрили! Теперь вы можете пользоваться панелью.",
+    "kk": "✅ Сіз мақұлдандыңыз! Енді панельді қолдана аласыз.",
+}
+TXT_REJECTED_USER = {
+    "uz": "❌ So‘rov rad etildi.\nSabab: {reason}",
+    "ru": "❌ Заявка отклонена.\nПричина: {reason}",
+    "kk": "❌ Сұрау қайтарылды.\nСебебі: {reason}",
+}
+BTN_APPROVE = {"uz":"✅ Qabul qilish","ru":"✅ Принять","kk":"✅ Қабылдау"}
+BTN_REJECT  = {"uz":"❌ Rad etish","ru":"❌ Отклонить","kk":"❌ Қайтару"}
+
+# Regex helpers: handlerlar uch tildagi tugma matnlarini tanisin
+def any_btn(*keys: str) -> str:
+    all_vals = []
+    for k in keys:
+        vals = list(LBL[k].values())
+        all_vals.extend(vals)
+    pat = "|".join(re.escape(v) for v in sorted(set(all_vals), key=len, reverse=True))
+    return rf"^(?:{pat})$"
+
+# ---------- Roles ----------
 def is_manager(user) -> bool:
     if not user: return False
     tid = user.id
@@ -54,34 +110,35 @@ def is_manager(user) -> bool:
     unames = {u.strip().lower() for u in (Config.MANAGER_USERNAMES or "").split(",") if u.strip()}
     return (tid in ids) or ((user.username or "").lower() in unames)
 
+# ---------- Keyboards ----------
 def kb_inline(rows: List[List[tuple]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton(txt, callback_data=cd) for (txt, cd) in row] for row in rows])
 
 def manager_home_kb(lang: str) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(LBL_TASK), KeyboardButton(LBL_STATUS)],
-        [KeyboardButton(LBL_REPORTS), KeyboardButton(LBL_EMPLOYEES)],
-        [KeyboardButton(LBL_INVITES), KeyboardButton(LBL_LANG)],
+        [KeyboardButton(LM(lang, "btn_assign", LBL["assign"])), KeyboardButton(LM(lang, "btn_status", LBL["status"]))],
+        [KeyboardButton(LM(lang, "btn_reports", LBL["reports"])), KeyboardButton(LM(lang, "btn_employees", LBL["employees"]))],
+        [KeyboardButton(LM(lang, "btn_requests", LBL["invites"])), KeyboardButton(LM(lang, "btn_change_lang", LBL["lang"]))],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def employee_home_kb(lang: str) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(LBL_MY_TASKS), KeyboardButton(LBL_SEND_REP)],
-        [KeyboardButton(LBL_LANG)],
+        [KeyboardButton(LM(lang, "btn_my_tasks", LBL["mytasks"])), KeyboardButton(LM(lang, "btn_send_report", LBL["sendrep"]))],
+        [KeyboardButton(LM(lang, "btn_change_lang", LBL["lang"]))],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-async def ensure_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict:
-    tg = update.effective_user
-    if not tg: return {}
-    user = db.upsert_user(tg.id, tg.username, f"{tg.first_name or ''} {tg.last_name or ''}".strip())
-    if not user.get("role"):
-        # auto-assign role for configured managers
-        role = "MANAGER" if is_manager(tg) else "EMPLOYEE"
-        db.set_user_role(tg.id, role)
-        user["role"] = role
-    return user
+def employee_pending_kb(lang: str) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(LM(lang, "btn_refresh", LBL["refresh"]))],
+        [KeyboardButton(LM(lang, "btn_change_lang", LBL["lang"]))],
+    ]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+# ---------- Tiny utils ----------
+def normalize_dt(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 def fmt_task(t: dict) -> str:
     dd = "-"
@@ -90,29 +147,23 @@ def fmt_task(t: dict) -> str:
         except Exception: dd = t["deadline"]
     return f"#{t['id']} • {t.get('title','(no title)')} — *{t.get('status','new').upper()}* • ⏰ {dd} • 🔥 {t.get('priority','Medium')}"
 
-# Natural date parsing (supports HH:MM DD.MM.YYYY)
-RE_DMY = re.compile(r"\b(\d{1,2})[.](\d{1,2})[.](\d{4})\b")
-RE_TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
-
-def normalize_dt(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+# ---------- Natural date parsing (HH:MM DD.MM.YYYY) ----------
+import re as _re
+RE_DMY  = _re.compile(r"\b(\d{1,2})[.](\d{1,2})[.](\d{4})\b")
+RE_TIME = _re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
 def parse_deadline_hhmm_dmy(text: str, base: datetime) -> Optional[str]:
-    """Siz so‘ragan format: HH:MM DD.MM.YYYY (agar sanasiz bo‘lsa — bugun)"""
-    t = text.strip()
+    t = (text or "").strip()
     tm = RE_TIME.search(t)
     date = RE_DMY.search(t)
-    if tm:
-        hh, mm = int(tm.group(1)), int(tm.group(2))
-    else:
-        return None
+    if not tm: return None
+    hh, mm = int(tm.group(1)), int(tm.group(2))
     if date:
         d, m, y = map(int, date.groups())
         try:
             return normalize_dt(datetime(y, m, d, hh, mm, tzinfo=TZ))
         except Exception:
             return None
-    # faqat vaqt — bugun
     today = base.date()
     return normalize_dt(datetime(today.year, today.month, today.day, hh, mm, tzinfo=TZ))
 
@@ -124,12 +175,11 @@ def parse_assignee(token: str) -> Optional[str]:
     if u and u.get("username"): return "@" + u["username"]
     return None
 
-# --- AI agent (optional) ---
+# ---------- AI agent (optional) ----------
 OPENAI_API_KEY = Config.OPENAI_API_KEY
 OPENAI_TASK_MODEL = Config.OPENAI_TASK_MODEL
 
 async def ai_parse_task(text: str, now_iso: str, known_usernames: List[str]) -> dict:
-    """Kirishdan {assignee,title,deadline,priority} ajratadi. OPENAI bo'lmasa — fallback."""
     nat = parse_deadline_hhmm_dmy(text, datetime.now(TZ))
     if not OPENAI_API_KEY:
         return {
@@ -147,7 +197,7 @@ async def ai_parse_task(text: str, now_iso: str, known_usernames: List[str]) -> 
             "Natijani JSON qaytaring: {\"assignee\":\"@username|name|null\",\"title\":\"...\","
             "\"deadline\":\"YYYY-MM-DD HH:MM\",\"priority\":\"Low|Medium|High|Urgent\"}. "
             "Sana-voqea ifodalari (ertaga, indin, bugun, ‘ovolkungi’) va shevalarni ham tushuning. "
-            "Agar sana ko‘rsatilmasa, foydalanuvchi bergan HH:MM DD.MM.YYYY formatini topishga harakat qiling; bo‘lmasa bugungi HH:MM qabul qiling."
+            "HH:MM DD.MM.YYYY ko‘rsatilsa, shuni oling; aks holda bugungi HH:MM bilan normalizatsiya qiling."
         )
         prompt = f"now={now_iso}\nknown_users={known_usernames}\ntext={text}"
         resp = await asyncio.to_thread(
@@ -182,26 +232,60 @@ async def ai_parse_task(text: str, now_iso: str, known_usernames: List[str]) -> 
             "priority": "Medium",
         }
 
-# --- /start ---
+# ---------- Core: ensure_user ----------
+async def ensure_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> dict:
+    tg = update.effective_user
+    if not tg: return {}
+    user = db.upsert_user(tg.id, tg.username, f"{tg.first_name or ''} {tg.last_name or ''}".strip())
+    # auto-assign role for configured managers
+    if not user.get("role"):
+        role = "MANAGER" if is_manager(tg) else "EMPLOYEE"
+        db.set_user_role(tg.id, role)
+        user["role"] = role
+    return user
+
+# ---------- Start / Language ----------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = await ensure_user(update, context)
     lang = u.get("language", Config.DEFAULT_LANG)
 
-    text = T(lang, "welcome_manager") if is_manager(tg) else T(lang, "welcome_employee")
-    await update.effective_chat.send_message(
-        text=text,
-        reply_markup=manager_home_kb(lang) if is_manager(tg) else employee_home_kb(lang),
-        parse_mode=ParseMode.HTML
-    )
+    # Employee pending gating (managerlarga so'rov jo'natish)
+    if not is_manager(tg) and not db.user_is_approved(tg.id):
+        created, req_id = db.ensure_pending_request(tg.id, tg.username, u.get("full_name"))
+        # Faqat yangi request yaratilganda adminlarga xabar:
+        if created:
+            for m in db.list_managers():
+                try:
+                    txt = LM(m.get("language","uz"), "new_request_text", TXT_NEW_REQ,
+                             username=u.get("username") or "-", full_name=u.get("full_name") or "-", uid=tg.id)
+                    kb = kb_inline([
+                        [(LM(m.get("language","uz"), "btn_approve", BTN_APPROVE), f"user:approve:{tg.id}"),
+                         (LM(m.get("language","uz"), "btn_reject", BTN_REJECT), f"user:reject:{tg.id}")]
+                    ])
+                    await context.bot.send_message(m["telegram_id"], txt, reply_markup=kb)
+                except Exception as e:
+                    logger.warning("Notify manager failed: %s", e)
 
-# --- Language ---
+        # Foydalanuvchiga pending ekran:
+        await update.effective_chat.send_message(
+            LM(lang, "pending_info", TXT_PENDING_INFO),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=employee_pending_kb(lang)
+        )
+        return
+
+    # Approved / Manager — panelni ko‘rsatamiz
+    text = T(lang, "welcome_manager") if is_manager(tg) else T(lang, "welcome_employee")
+    kb = manager_home_kb(lang) if is_manager(tg) else employee_home_kb(lang)
+    await update.effective_chat.send_message(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
 async def cmd_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await ensure_user(update, context)
     lang = u.get("language", Config.DEFAULT_LANG)
     kb = kb_inline([
         [("🇺🇿 O‘zbek", "lang:uz"), ("🇷🇺 Русский", "lang:ru"), ("🇰🇿 Қазақша", "lang:kk")],
-        [(T(lang,"btn_back"), "back:home")]
+        [(LM(lang,"btn_back", LBL["back"]), "back:home")]
     ])
     await update.effective_chat.send_message(T(lang, "choose_language"), reply_markup=kb)
 
@@ -209,16 +293,15 @@ async def on_cb_language(update: Update, context: ContextTypes.DEFAULT_TYPE, cod
     tg = update.effective_user
     db.set_user_language(tg.id, code)
     text = T(code, "language_set", lang=code)
-    await update.effective_chat.send_message(
-        text, reply_markup=manager_home_kb(code) if is_manager(tg) else employee_home_kb(code)
-    )
+    kb = manager_home_kb(code) if is_manager(tg) else (employee_home_kb(code) if db.user_is_approved(tg.id) else employee_pending_kb(code))
+    await update.effective_chat.send_message(text, reply_markup=kb)
 
-# --- Employees ---
+# ---------- Employees (Manager only) ----------
 def employees_menu_kb(lang: str) -> InlineKeyboardMarkup:
     return kb_inline([
-        [(T(lang,"btn_emp_list"), "emp:list")],
-        [(T(lang,"btn_emp_add"), "emp:add"), (T(lang,"btn_emp_remove"), "emp:remove")],
-        [(T(lang,"btn_back"), "back:home")]
+        [(T(lang,"btn_emp_list") or "📋 Ro‘yxat", "emp:list")],
+        [(T(lang,"btn_emp_add") or "➕ Qo‘shish", "emp:add"), (T(lang,"btn_emp_remove") or "🗑️ O‘chirish", "emp:remove")],
+        [(LM(lang,"btn_back", LBL["back"]), "back:home")]
     ])
 
 async def cb_employees_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, lang: str):
@@ -249,19 +332,31 @@ async def ask_emp_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, lan
     context.user_data["awaiting_emp_remove"] = True
     await update.effective_chat.send_message(T(lang,"emp_remove_hint"), reply_markup=employees_menu_kb(lang))
 
-# --- text router (flows) ---
+# ---------- Text Router ----------
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = db.get_user(tg.id) or {}
     lang = u.get("language", Config.DEFAULT_LANG)
     text = (update.message.text or "").strip()
 
-    # employees add
+    # If pending (and not manager), faqat refresh/lang ishlasin
+    if not is_manager(tg) and not db.user_is_approved(tg.id):
+        if text == LM(lang, "btn_refresh", LBL["refresh"]) or text.lower() in {"/refresh","refresh"}:
+            return await cmd_start(update, context)
+        if text == LM(lang, "btn_change_lang", LBL["lang"]) or text.lower() in {"/language","/lang"}:
+            return await cmd_language(update, context)
+        # boshqa hamma narsa bloklanadi
+        return await update.effective_chat.send_message(
+            LM(lang, "pending_info", TXT_PENDING_INFO),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=employee_pending_kb(lang)
+        )
+
+    # employees add/remove
     if context.user_data.pop("awaiting_emp_add_username", False):
         if not text.startswith("@"):
             return await update.effective_chat.send_message(T(lang,"enter_username_error"), reply_markup=employees_menu_kb(lang))
         context.user_data["new_emp_username"] = text.lstrip("@")
-        # create direct invite
         ok, link = db.create_invite_for(context.user_data.pop("new_emp_username"), full_name=None)
         if ok:
             await update.effective_chat.send_message(T(lang,"invite_created", username=text.lstrip("@"), link=link),
@@ -311,6 +406,24 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_chat.send_message("Xatolik sodir bo‘ldi.", reply_markup=employee_home_kb(lang))
         return
 
+    # user reject reason (admin flow)
+    if context.user_data.get("awaiting_user_reject_reason_for"):
+        uid = context.user_data.pop("awaiting_user_reject_reason_for")
+        reason = text
+        try:
+            db.reject_pending_user(uid, reason)
+            # notify user
+            try:
+                u_lang = (db.get_user(uid) or {}).get("language","uz")
+                await context.bot.send_message(uid, LM(u_lang, "rejected_user", TXT_REJECTED_USER, reason=reason))
+            except Exception:
+                pass
+            await update.effective_chat.send_message("❌ Rejected.", reply_markup=manager_home_kb(lang))
+        except Exception as e:
+            logger.exception("Reject user failed: %s", e)
+            await update.effective_chat.send_message("Xatolik.", reply_markup=manager_home_kb(lang))
+        return
+
     # task wizard (natural)
     if context.user_data.pop("tw_wait_nl", False):
         now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
@@ -346,7 +459,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await schedule_task_deadline(context.application, task_id)
         return
 
-# --- /task (slash saqlanadi) ---
+# ---------- Slash commands ----------
 async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = await ensure_user(update, context)
@@ -362,14 +475,11 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     assigned = ""
     title = ""
     priority = "Medium"
-    deadline = ""
 
-    # 1) @username
     if payload.startswith("@"):
         toks = payload.split(maxsplit=1)
         assigned = toks[0]; payload = toks[1] if len(toks) > 1 else ""
 
-    # 2) "title"
     if '"' in payload:
         try:
             i = payload.index('"'); j = payload.index('"', i+1)
@@ -380,13 +490,11 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         title = payload; payload = ""
 
-    # 3) [Priority]
     if "[" in payload and "]" in payload:
         pr = payload[payload.index("[")+1:payload.index("]")].strip().title()
         if pr in {"Low","Medium","High","Urgent"}: priority = pr
         payload = (payload[:payload.index("[")] + payload[payload.index("]")+1:]).strip()
 
-    # 4) time & date (HH:MM DD.MM.YYYY)
     deadline = parse_deadline_hhmm_dmy(payload, datetime.now(TZ)) or ""
 
     if not assigned:
@@ -417,7 +525,6 @@ async def cmd_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(T(lang,"task_created", task_id=task_id), reply_markup=manager_home_kb(lang))
     await schedule_task_deadline(context.application, task_id)
 
-# --- /status ---
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = await ensure_user(update, context)
@@ -436,7 +543,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.MARKDOWN,
                                              reply_markup=manager_home_kb(lang))
 
-# --- Hisobotlar (managerga ko‘rsatma matni) ---
 async def build_daily_report_text() -> str:
     rows = db.build_daily_summary()
     if not rows: return "*Bugun faoliyat bo‘yicha ma’lumot yo‘q.*"
@@ -455,7 +561,6 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(text, parse_mode=ParseMode.MARKDOWN,
                                              reply_markup=manager_home_kb(lang))
 
-# --- Employee buyruqlari ---
 async def cmd_mytasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = await ensure_user(update, context)
@@ -491,12 +596,12 @@ async def cb_employee_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await update.effective_chat.send_message("Bugungi hisobotni yozib yuboring.\n(IDsiz yuborsangiz umumiy kundalik sifatida saqlanadi)")
     context.user_data["awaiting_task_done_report"] = 0
 
-# --- Voice → AI ---
+# ---------- Voice → AI (manager only) ----------
 async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = await ensure_user(update, context)
     lang = u.get("language", Config.DEFAULT_LANG)
-    if not is_manager(tg):  # faqat menejer ovozdan vazifa bera oladi
+    if not is_manager(tg):
         return
     voice = update.message.voice
     if not voice: return
@@ -543,7 +648,7 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_message(T(lang,"task_created", task_id=task_id), reply_markup=manager_home_kb(lang))
     await schedule_task_deadline(context.application, task_id)
 
-# --- scheduler helpers ---
+# ---------- Schedulers ----------
 async def send_daily_reminder(app: Application, when: str):
     for e in db.list_employees():
         lang = e.get("language", "uz")
@@ -603,54 +708,89 @@ async def daily_manager_report(app: Application):
         except Exception as e:
             logger.warning("Manager report failed: %s", e)
 
-# --- callbacks ---
+# ---------- Callbacks ----------
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = db.get_user(tg.id) or {}
     lang = u.get("language", Config.DEFAULT_LANG)
     data = update.callback_query.data
 
+    # Language
     if data == "u:language":
         return await cmd_language(update, context)
     if data.startswith("lang:"):
         return await on_cb_language(update, context, data.split(":",1)[1])
 
-    # employees
+    # Employees menu
     if data == "m:employees": return await cb_employees_menu(update, context, lang)
     if data == "emp:list":    return await cb_emp_list(update, context, lang)
     if data == "emp:add":     return await ask_emp_add(update, context, lang)
     if data == "emp:remove":  return await ask_emp_remove(update, context, lang)
 
-    # invites (simple list -> approve/reject flow demo)
+    # Invites / Requests (pending users)
     if data == "m:invites":
         reqs = db.list_invite_requests()
         rows = []
-        for r in reqs:
-            rid = r["id"]; title = f"@{r.get('username') or '-'} | {r.get('full_name') or '-'}"
-            rows.append([(title, "noop")])
-            rows.append([("✅ Qabul", f"inv:approve:{rid}"), ("❌ Rad", f"inv:reject:{rid}")])
-        if not rows: rows = [[("— Bo‘sh —", "noop")]]
-        rows.append([(T(lang,"btn_back"), "back:home")])
+        if not reqs:
+            rows = [[("—", "noop")]]
+        else:
+            for r in reqs:
+                rid = r["id"]
+                title = f"@{r.get('username') or '-'} | {r.get('full_name') or '-'}"
+                rows.append([(title, "noop")])
+                rows.append([
+                    (LM(lang,"btn_approve", BTN_APPROVE), f"inv:approve_user:{rid}"),
+                    (LM(lang,"btn_reject", BTN_REJECT),   f"inv:reject_user:{rid}")
+                ])
+        rows.append([(LM(lang,"btn_back", LBL["back"]), "back:home")])
         return await update.effective_chat.send_message(T(lang,"invites_title"), reply_markup=kb_inline(rows))
 
-    if data.startswith("inv:approve:"):
+    if data.startswith("inv:approve_user:"):
         rid = int(data.split(":")[-1])
         try:
-            link = db.approve_invite_request(rid)
-            await update.effective_chat.send_message(f"✅ {T(lang,'invite_accept_ok')}\n🔗 {link}",
-                                                     reply_markup=manager_home_kb(lang))
+            db.approve_pending_user(rid, approved_by=tg.id)
+            await update.effective_chat.send_message("✅ Approved.", reply_markup=manager_home_kb(lang))
+            # try notify the user
+            try:
+                with sqlite3.connect(db.path) as con:
+                    con.row_factory = lambda c, row: {desc[0]: row[i] for i, desc in enumerate(c.description)}
+                    cur = con.cursor()
+                    cur.execute("SELECT user_id FROM invite_requests WHERE id=?", (rid,))
+                    r = cur.fetchone()
+                if r and r.get("user_id"):
+                    u_lang = (db.get_user(r["user_id"]) or {}).get("language","uz")
+                    await context.bot.send_message(r["user_id"], LM(u_lang, "approved_user", TXT_APPROVED_USER))
+            except Exception as ne:
+                logger.warning("Notify approved user failed: %s", ne)
         except Exception as ex:
-            logger.exception("approve invite: %s", ex)
-            await update.effective_chat.send_message("Tasdiqlashda xatolik.", reply_markup=manager_home_kb(lang))
+            logger.exception("approve inv req: %s", ex)
+            await update.effective_chat.send_message("Xatolik.", reply_markup=manager_home_kb(lang))
         return
 
-    if data.startswith("inv:reject:"):
+    if data.startswith("inv:reject_user:"):
         rid = int(data.split(":")[-1])
-        context.user_data["awaiting_inv_reject_for"] = rid
+        # get user_id to store in context
+        uid = None
+        try:
+            with sqlite3.connect(db.path) as con:
+                con.row_factory = lambda c, row: {desc[0]: row[i] for i, desc in enumerate(c.description)}
+                cur = con.cursor()
+                cur.execute("SELECT user_id FROM invite_requests WHERE id=?", (rid,))
+                r = cur.fetchone()
+                uid = r.get("user_id") if r else None
+        except Exception:
+            pass
+        context.user_data["awaiting_user_reject_reason_for"] = uid or rid
         await update.effective_chat.send_message("Rad etish sababini yuboring:")
         return
 
-    # manager quick entries
+    # Employee quick entries
+    if data == "e:mytasks":
+        return await cmd_mytasks(update, context)
+    if data == "e:report":
+        return await cb_employee_report(update, context, lang)
+
+    # Manager quick entries
     if data == "m:assign":
         context.user_data["tw_wait_nl"] = True
         return await update.effective_chat.send_message(T(lang,"assign_task_prompt"))
@@ -659,13 +799,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "m:reports":
         return await cmd_report(update, context)
 
-    # employee quick
-    if data == "e:mytasks":
-        return await cmd_mytasks(update, context)
-    if data == "e:report":
-        return await cb_employee_report(update, context, lang)
-
-    # task lifecycle
+    # Task lifecycle
     if data.startswith("task:acc:"):
         task_id = int(data.split(":")[-1])
         try:
@@ -688,15 +822,36 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_chat.send_message("Qisqacha hisobot yuboring (nima bajarildi):")
         return
 
+    # Inline approval from instant manager notification
+    if data.startswith("user:approve:"):
+        uid = int(data.split(":")[-1])
+        try:
+            db.approve_pending_user(uid, approved_by=tg.id)
+            try:
+                u_lang = (db.get_user(uid) or {}).get("language","uz")
+                await context.bot.send_message(uid, LM(u_lang, "approved_user", TXT_APPROVED_USER))
+            except Exception:
+                pass
+            await update.effective_chat.send_message("✅ Approved.", reply_markup=manager_home_kb(lang))
+        except Exception as e:
+            logger.exception("user approve failed: %s", e)
+            await update.effective_chat.send_message("Xatolik.", reply_markup=manager_home_kb(lang))
+        return
+
+    if data.startswith("user:reject:"):
+        uid = int(data.split(":")[-1])
+        context.user_data["awaiting_user_reject_reason_for"] = uid
+        await update.effective_chat.send_message("Rad etish sababini yuboring:")
+        return
+
     if data == "back:home":
         role_is_manager = is_manager(tg)
         text = T(lang, "welcome_manager" if role_is_manager else "welcome_employee")
-        await update.effective_chat.send_message(text,
-            reply_markup=manager_home_kb(lang) if role_is_manager else employee_home_kb(lang))
+        kb = manager_home_kb(lang) if role_is_manager else (employee_home_kb(lang) if db.user_is_approved(tg.id) else employee_pending_kb(lang))
+        await update.effective_chat.send_message(text, reply_markup=kb)
 
-# --- post init ---
+# ---------- Post init ----------
 async def on_start(app: Application):
-    # Telegram polling 409 oldini olish uchun webhookni tozalash PTB o'zi qiladi; biz schedule qilamiz
     if app.job_queue:
         try:
             app.job_queue.set_timezone(TZ)
@@ -709,7 +864,7 @@ async def on_start(app: Application):
     await schedule_daily_manager_report(app)
     logger.info("Startup scheduling done")
 
-# --- builders ---
+# ---------- Wizard shortcuts ----------
 async def task_wizard_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg = update.effective_user
     u = db.get_user(tg.id) or {}
@@ -725,10 +880,11 @@ async def on_callback_from_text(update: Update, context: ContextTypes.DEFAULT_TY
     update.callback_query = d
     await on_callback(update, context)
 
+# ---------- App builder ----------
 def build_application() -> Application:
     app = (Application.builder().token(Config.TELEGRAM_BOT_TOKEN).post_init(on_start).build())
 
-    # slash
+    # Slash
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("language", cmd_language))
     app.add_handler(CommandHandler("task", cmd_task))
@@ -737,76 +893,55 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("mytasks", cmd_mytasks))
     app.add_handler(CommandHandler("done", cmd_done))
 
-    # reply kb
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_TASK)}$"), task_wizard_start))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_STATUS)}$"), cmd_status))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_REPORTS)}$"), cmd_report))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_EMPLOYEES)}$"),
+    # Reply keyboard handlers (3-til regex)
+    app.add_handler(MessageHandler(filters.Regex(any_btn("assign")), task_wizard_start))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("status")), cmd_status))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("reports")), cmd_report))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("employees")),
                                    lambda u,c: cb_employees_menu(u,c,(db.get_user(u.effective_user.id) or {}).get('language',Config.DEFAULT_LANG))))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_INVITES)}$"),
+    app.add_handler(MessageHandler(filters.Regex(any_btn("invites")),
                                    lambda u,c: on_callback_from_text(u,c,"m:invites")))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_LANG)}$"), cmd_language))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_MY_TASKS)}$"), cmd_mytasks))
-    app.add_handler(MessageHandler(filters.Regex(f"^{re.escape(LBL_SEND_REP)}$"),
+    app.add_handler(MessageHandler(filters.Regex(any_btn("lang")), cmd_language))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("mytasks")), cmd_mytasks))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("sendrep")),
                                    lambda u,c: cb_employee_report(u,c,(db.get_user(u.effective_user.id) or {}).get('language',Config.DEFAULT_LANG))))
+    app.add_handler(MessageHandler(filters.Regex(any_btn("refresh")), cmd_start))
 
-    # callbacks, text, voice
+    # Callback, text, voice
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-    app.add_handler(MessageHandler(filters.VOICE, on_voice))  # fayl handlerlar yo‘q
+    app.add_handler(MessageHandler(filters.VOICE, on_voice))  # fayl handlerlari yo‘q
 
     return app
 
-def main():
-    app = build_application()
-    logger.info("Starting bot …")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.exception("Fatal error: %s", e)
-        raise
-# --- main (polling/webhook auto) ---
-import os
-
+# ---------- Main (webhook/polling) ----------
 def main():
     app = build_application()
     logger.info("Starting bot …")
 
-    # WEBHOOK ni yoqish shartlari:
-    # - USE_WEBHOOK=1 yoki RENDER_EXTERNAL_URL mavjud
-    # - PORT mavjud bo'lishi kerak (Render uni beradi)
     use_webhook = os.getenv("USE_WEBHOOK", "0") == "1" or bool(os.getenv("RENDER_EXTERNAL_URL"))
     port = int(os.getenv("PORT", "8080"))
     base_url = os.getenv("WEBHOOK_BASE", os.getenv("RENDER_EXTERNAL_URL", "")).rstrip("/")
-    secret_token = os.getenv("WEBHOOK_SECRET", "")  # ixtiyoriy: Telegram x-secret-token
+    secret_token = os.getenv("WEBHOOK_SECRET", "")
 
     if use_webhook and base_url:
-        # Webhook URL -> https://<host>/<token>
         webhook_url = f"{base_url}/{Config.TELEGRAM_BOT_TOKEN}"
         logger.info("Running in WEBHOOK mode at %s", webhook_url)
-
-        # PTB v21: run_webhook
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=Config.TELEGRAM_BOT_TOKEN,
             webhook_url=webhook_url,
             secret_token=secret_token or None,
-            drop_pending_updates=True,          # eski navbatni tozalaydi
-            allowed_updates=Update.ALL_TYPES,   # barcha update turlari
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
         )
     else:
-        # Polling (faqat bitta instansiya!)
         logger.info("Running in POLLING mode")
-        # deleteWebhook pollingdan oldin allaqachon post_init da bor, lekin yana ham o‘rnatamiz:
         try:
             app.bot.delete_webhook(drop_pending_updates=True)
         except Exception:
             pass
-
         app.run_polling(
             poll_interval=2.0,
             timeout=30,
