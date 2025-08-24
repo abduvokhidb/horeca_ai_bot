@@ -768,3 +768,55 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception("Fatal error: %s", e)
         raise
+# --- main (polling/webhook auto) ---
+import os
+
+def main():
+    app = build_application()
+    logger.info("Starting bot …")
+
+    # WEBHOOK ni yoqish shartlari:
+    # - USE_WEBHOOK=1 yoki RENDER_EXTERNAL_URL mavjud
+    # - PORT mavjud bo'lishi kerak (Render uni beradi)
+    use_webhook = os.getenv("USE_WEBHOOK", "0") == "1" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+    port = int(os.getenv("PORT", "8080"))
+    base_url = os.getenv("WEBHOOK_BASE", os.getenv("RENDER_EXTERNAL_URL", "")).rstrip("/")
+    secret_token = os.getenv("WEBHOOK_SECRET", "")  # ixtiyoriy: Telegram x-secret-token
+
+    if use_webhook and base_url:
+        # Webhook URL -> https://<host>/<token>
+        webhook_url = f"{base_url}/{Config.TELEGRAM_BOT_TOKEN}"
+        logger.info("Running in WEBHOOK mode at %s", webhook_url)
+
+        # PTB v21: run_webhook
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=Config.TELEGRAM_BOT_TOKEN,
+            webhook_url=webhook_url,
+            secret_token=secret_token or None,
+            drop_pending_updates=True,          # eski navbatni tozalaydi
+            allowed_updates=Update.ALL_TYPES,   # barcha update turlari
+        )
+    else:
+        # Polling (faqat bitta instansiya!)
+        logger.info("Running in POLLING mode")
+        # deleteWebhook pollingdan oldin allaqachon post_init da bor, lekin yana ham o‘rnatamiz:
+        try:
+            app.bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            pass
+
+        app.run_polling(
+            poll_interval=2.0,
+            timeout=30,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+        )
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.exception("Fatal error: %s", e)
+        raise
