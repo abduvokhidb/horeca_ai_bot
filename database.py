@@ -79,7 +79,7 @@ class Database:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_to)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_invreq_status ON invite_requests(status)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_invreq_user ON invite_requests(user_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_invreq_user   ON invite_requests(user_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_invites_token ON invites(token)")
 
     # ------- Users -------
@@ -275,7 +275,7 @@ class Database:
                 out.append({"employee": e, "tasks": cur.fetchall() or []})
             return out
 
-    # ------- Invites (optional direct links) -------
+    # ------- Invites (direct link) -------
     def _gen_token(self) -> str:
         return secrets.token_urlsafe(12)
 
@@ -291,7 +291,7 @@ class Database:
             link = f"https://t.me/{(BOT_USERNAME or '<BOT_USERNAME>')}?start={token}"
             return True, link
 
-    # ------- Pending/Approve oqimi -------
+    # ------- Pending/Approval helpers -------
     def user_is_approved(self, telegram_id: int) -> bool:
         """Managerlar har doim approved. Employee bo‘lsa va pending yo‘q bo‘lsa True."""
         with self._conn() as c:
@@ -303,15 +303,31 @@ class Database:
                 return True
             if (u.get("role") or "") != "EMPLOYEE":
                 return False
-            # employee: agar pending bo'lmasa approved
             cur.execute("SELECT 1 FROM invite_requests WHERE user_id=? AND status='pending' LIMIT 1", (telegram_id,))
             return cur.fetchone() is None
+
+    def get_invite_request_by_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        with self._conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT * FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
+                        (user_id,))
+            return cur.fetchone()
+
+    def create_invite_request(self, user_id: int, username: Optional[str], full_name: Optional[str]) -> int:
+        with self._conn() as c:
+            cur = c.cursor()
+            cur.execute("""
+                INSERT INTO invite_requests(user_id, username, full_name, status)
+                VALUES(?,?,?, 'pending')
+            """, (user_id, username or None, full_name or None))
+            return cur.lastrowid
 
     def ensure_pending_request(self, user_id: int, username: Optional[str], full_name: Optional[str]) -> Tuple[bool, int]:
         """Agar pending mavjud bo‘lsa (False, id), bo‘lmasa yaratib (True, id) qaytaradi."""
         with self._conn() as c:
             cur = c.cursor()
-            cur.execute("SELECT id FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY id DESC LIMIT 1", (user_id,))
+            cur.execute("SELECT id FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
+                        (user_id,))
             r = cur.fetchone()
             if r: return (False, r["id"])
             cur.execute("""
@@ -326,23 +342,19 @@ class Database:
             cur.execute("SELECT * FROM invite_requests WHERE status='pending' ORDER BY created_at ASC")
             return cur.fetchall() or []
 
+    # --- New canonical names ---
     def approve_pending_user(self, key: int, approved_by: Optional[int] = None) -> None:
-        """
-        key = request_id YOKI user_id bo‘lishi mumkin:
-        - Avval request_id sifatida qidiradi;
-        - topilmasa, user_id bo‘yicha oxirgi 'pending' yozuvni oladi.
-        So‘ng: invite_requests.status='approved', users.role='EMPLOYEE'.
-        """
+        """key = request_id yoki user_id; invite_requests -> approved, user -> EMPLOYEE."""
         with self._conn() as c:
             cur = c.cursor()
             cur.execute("SELECT * FROM invite_requests WHERE id=? AND status='pending'", (key,))
             req = cur.fetchone()
             if not req:
-                cur.execute("SELECT * FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1", (key,))
+                cur.execute("SELECT * FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
+                            (key,))
                 req = cur.fetchone()
             if not req:
                 raise ValueError("Pending so‘rov topilmadi")
-
             uid = req["user_id"]
             cur.execute("UPDATE invite_requests SET status='approved', decided_at=datetime('now') WHERE id=?", (req["id"],))
             cur.execute("UPDATE users SET role='EMPLOYEE', active=1 WHERE telegram_id=?", (uid,))
@@ -354,7 +366,8 @@ class Database:
             cur.execute("SELECT * FROM invite_requests WHERE id=? AND status='pending'", (key,))
             req = cur.fetchone()
             if not req:
-                cur.execute("SELECT * FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1", (key,))
+                cur.execute("SELECT * FROM invite_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",
+                            (key,))
                 req = cur.fetchone()
             if not req:
                 raise ValueError("Pending so‘rov topilmadi")
@@ -363,3 +376,35 @@ class Database:
                 SET status='rejected', reason=?, decided_at=datetime('now')
                 WHERE id=?
             """, (reason or "", req["id"]))
+
+    # --- Wrappers for backward-compat with your current bot.py ---
+    def approve_invite_request(self, req_id: int) -> str:
+        """
+        Eski bot.py 'approve_invite_request' ni chaqiradi.
+        Pendingni APPROVE qiladi, foydalanuvchini EMPLOYEE qiladi
+        va managerga berish uchun deep-link invite yaratib qaytaradi.
+        """
+        with self._conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT * FROM invite_requests WHERE id=? AND status='pending'", (req_id,))
+            req = cur.fetchone()
+            if not req:
+                raise ValueError("Invite request topilmadi yoki allaqachon ko‘rib chiqilgan")
+
+            # userni approve
+            uid = req["user_id"]
+            cur.execute("UPDATE invite_requests SET status='approved', decided_at=datetime('now') WHERE id=?", (req_id,))
+            cur.execute("UPDATE users SET role='EMPLOYEE', active=1 WHERE telegram_id=?", (uid,))
+
+            # deep-link token (ixtiyoriy, lekin eski UI shu linkni ko‘rsatadi)
+            token = secrets.token_urlsafe(12)
+            cur.execute("""
+                INSERT INTO invites(username, full_name, token, status, approved_by, approved_at)
+                VALUES(?,?,?,?,?, datetime('now'))
+            """, (req.get("username"), req.get("full_name"), token, "active", uid))
+            link = f"https://t.me/{(BOT_USERNAME or '<BOT_USERNAME>')}?start={token}"
+            return link
+
+    def reject_invite_request(self, req_id: int, reason: Optional[str] = None) -> None:
+        """Eski nomga mos wrapper."""
+        self.reject_pending_user(req_id, reason)
