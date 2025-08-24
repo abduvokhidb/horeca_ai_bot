@@ -223,3 +223,43 @@ def T(lang: str, key: str, **kwargs) -> str:
         return s.format(**kwargs)
     except Exception:
         return s
+# languages.py oxiriga qo'shing
+
+# --- Aliases (orqaga moslik) ---
+def _alias(lang: str, src: str, dst: str):
+    if lang in STRINGS and src in STRINGS[lang] and dst not in STRINGS[lang]:
+        STRINGS[lang][dst] = STRINGS[lang][src]
+
+for lg in ("uz", "ru", "kk"):
+    # menu labels
+    _alias(lg, "btn_back", "btn_back")  # agar allaqachon bor bo'lsa qoldiradi
+    # lbl_* ni btn_* ga ko'chirish
+    _alias(lg, "lbl_back", "btn_back")
+    _alias(lg, "lbl_emp_list", "btn_emp_list")
+    _alias(lg, "lbl_emp_add", "btn_emp_add")
+    _alias(lg, "lbl_emp_remove", "btn_emp_remove")
+
+    # Agar siz asosiy menyuda lbl_* ishlatsangiz, btn_* nomlari ham ishlasin:
+    menu_pairs = {
+        "lbl_assign": "btn_assign",
+        "lbl_employees": "btn_employees",
+        "lbl_dashboard": "btn_dashboard",
+        "lbl_reports": "btn_reports",
+        "lbl_requests": "btn_requests",
+        "lbl_settings": "btn_settings",
+        "lbl_chat": "btn_chat",
+        "lbl_ai": "btn_ai",
+        "lbl_my_tasks": "btn_my_tasks",
+        "lbl_send_report": "btn_send_report",
+        "lbl_change_lang": "btn_change_lang",
+        "lbl_change_name": "btn_change_name",
+        "lbl_change_phone": "btn_change_phone",
+        "lbl_register": "btn_register",
+    }
+    for src, dst in menu_pairs.items():
+        _alias(lg, src, dst)
+
+# Minimal kalitlar ishonch uchun:
+for lg in ("uz", "ru", "kk"):
+    STRINGS[lg].setdefault("assign_task_prompt",
+        STRINGS[lg].get("task_usage") or STRINGS["uz"]["assign_task_prompt"])
